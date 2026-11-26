@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Service External-IP 활용 &amp; L2 Announcement · Cilium Network Study Blog</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body data-base="../" data-post-id="service-external-ip">
+  <header id="topbar" class="topbar"></header>
+  <div class="shell">
+    <aside id="sidebar" class="sidebar"></aside>
+    <main class="workspace">
+      <div class="breadcrumb">
+        <a href="../index.html">전체 대문</a>
+        <span>/</span>
+        <span>03 · Node &amp; Pod 네트워크 통신</span>
+      </div>
+      <article class="article-card">
+        <header class="article-header">
+          <div class="article-meta-row">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <span class="pill">03 · Node &amp; Pod 네트워크 통신</span>
+              <span style="font-size:12.5px; color:var(--text-soft);">Jini-99 · 2025. 8. 10.</span>
+            </div>
+            <button id="completeBtn" class="complete-btn" type="button">○ 학습 완료 표시</button>
+          </div>
+          <h1 class="article-title">Service External-IP 활용 &amp; L2 Announcement</h1>
+          <p class="article-lead">온프레미스/IDC 환경에서 MetalLB 없이 CiliumLoadBalancerIPPool로 LoadBalancer IP를 할당하고, CiliumL2AnnouncementPolicy(ARP + Lease)로 외부에 노출하는 방법입니다.</p>
+        </header>
+        
+<section class="article-section">
+  <h2>Cilium Service LB-IPAM (CiliumLoadBalancerIPPool)</h2>
+  <p>IDC 환경에서는 MetalLB 등이 없으면 <code>type: LoadBalancer</code> 서비스가 <code>&lt;pending&gt;</code> 상태에 머뭅니다. Cilium에서는 <code>CiliumLoadBalancerIPPool</code>(<code>lbippool</code>) 객체로 IP 풀을 선언해 자동으로 EXTERNAL-IP를 할당할 수 있습니다.</p>
+  <div class="code-box">
+  <div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>apiVersion: &quot;cilium.io/v2&quot; # v1.17 : cilium.io/v2alpha1
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: &quot;cilium-lb-ippool&quot;
+spec:
+  blocks:
+    - start: &quot;192.168.10.211&quot;
+      stop: &quot;192.168.10.215&quot;</code></pre>
+</div>
+  <p>배포 즉시 EXTERNAL-IP가 할당되며, <code>cilium-dbg service list</code>에서 EXTERNAL-IP와 각 Pod Endpoint 매핑을 확인할 수 있습니다. 단, 클러스터 외부 라우터는 아직 이 IP의 위치를 모르기 때문에 L2 Announcement 또는 BGP가 필요합니다.</p>
+</section>
+
+<section class="article-section">
+  <h2>Cilium L2 Announcement 설정 및 Lease 동작 원리</h2>
+  <p>같은 L2 네트워크 대역에서 ARP로 EXTERNAL-IP를 광고하기 위해 <code>l2announcements.enabled=true</code>를 활성화하고 <code>CiliumL2AnnouncementPolicy</code>를 배포합니다.</p>
+  <div class="code-box">
+  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>helm upgrade cilium cilium/cilium --namespace kube-system --version 1.18.0 --reuse-values \
+  --set l2announcements.enabled=true
+kubectl rollout restart -n kube-system ds/cilium</code></pre>
+</div>
+  <div class="code-box">
+  <div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>apiVersion: &quot;cilium.io/v2alpha1&quot;
+kind: CiliumL2AnnouncementPolicy
+metadata:
+  name: policy1
+spec:
+  serviceSelector:
+    matchLabels:
+      app: webpod
+  nodeSelector:
+    matchExpressions:
+      - key: kubernetes.io/hostname
+        operator: NotIn
+        values:
+          - k8s-w0
+  interfaces:
+    - ^eth[1-9]+
+  externalIPs: true
+  loadBalancerIPs: true</code></pre>
+</div>
+  <div class="code-box">
+  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code># Lease 리더 선출 확인
+kubectl get lease
+# NAME                                  HOLDER   AGE
+# cilium-l2announce-kube-system-webpod  k8s-w1   16s
+
+# 라우터에서 ARP 확인 -&gt; 192.168.10.212가 k8s-w1의 MAC 주소로 등록됨
+arp -a</code></pre>
+</div>
+  <figure class="figure-box">
+  <svg viewBox="0 0 720 140" width="100%" height="auto" role="img" aria-label="L2 Announcement 트래픽 흐름">
+    <defs><marker id="arr-l2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 1L10 5L0 9z" fill="#0284c7"/></marker></defs>
+    <rect x="20" y="38" width="145" height="60" rx="8" fill="rgba(2,132,199,0.12)" stroke="#0284c7"/><text x="92" y="65" text-anchor="middle" fill="currentColor" font-size="12" font-weight="700">Router / Client</text><text x="92" y="83" text-anchor="middle" fill="#64748b" font-size="10">ARP로 k8s-w1 MAC 학습</text>
+    <line x1="165" y1="68" x2="245" y2="68" stroke="#0284c7" stroke-width="2" marker-end="url(#arr-l2)"/>
+    <rect x="250" y="38" width="180" height="60" rx="8" fill="rgba(217,119,6,0.12)" stroke="#d97706"/><text x="340" y="65" text-anchor="middle" fill="currentColor" font-size="12" font-weight="700">Lease 리더 (k8s-w1)</text><text x="340" y="83" text-anchor="middle" fill="#64748b" font-size="10">EXTERNAL-IP 트래픽 수신</text>
+    <line x1="430" y1="68" x2="510" y2="68" stroke="#0284c7" stroke-width="2" marker-end="url(#arr-l2)"/>
+    <rect x="515" y="38" width="180" height="60" rx="8" fill="rgba(22,163,74,0.12)" stroke="#16a34a"/><text x="605" y="65" text-anchor="middle" fill="currentColor" font-size="12" font-weight="700">Backend Pods</text><text x="605" y="83" text-anchor="middle" fill="#64748b" font-size="10">eBPF 서비스 로드밸런싱</text>
+  </svg>
+  <figcaption class="figure-caption">L2 Announcement Lease 리더 노드를 통한 EXTERNAL-IP 트래픽 분배</figcaption>
+</figure>
+</section>
+
+        <div style="margin-top:20px; font-size:13.5px; color:var(--text-muted);">
+          <strong>원본 참고:</strong> <a href="https://dobby-isfree.tistory.com/259" target="_blank" rel="noopener noreferrer">https://dobby-isfree.tistory.com/259 ↗</a>
+        </div>
+        <div class="tag-row"><span class="tag">#LB-IPAM</span><span class="tag">#CiliumLoadBalancerIPPool</span><span class="tag">#L2Announcement</span><span class="tag">#ARP</span><span class="tag">#Lease</span></div>
+      </article>
+      <nav id="articleNav" class="article-nav"></nav>
+    </main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="../assets/data.js"></script>
+  <script src="../assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>K8s &amp; Cilium 부하 테스트 및 성능 측정 · Cilium Network Study Blog</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body data-base="../" data-post-id="performance-benchmark">
+  <header id="topbar" class="topbar"></header>
+  <div class="shell">
+    <aside id="sidebar" class="sidebar"></aside>
+    <main class="workspace">
+      <div class="breadcrumb">
+        <a href="../index.html">전체 대문</a>
+        <span>/</span>
+        <span>06 · 성능 측정 &amp; 보안 (Security)</span>
+      </div>
+      <article class="article-card">
+        <header class="article-header">
+          <div class="article-meta-row">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <span class="pill">06 · 성능 측정 &amp; 보안 (Security)</span>
+              <span style="font-size:12.5px; color:var(--text-soft);">Jini-99 · 2025. 8. 30.</span>
+            </div>
+            <button id="completeBtn" class="complete-btn" type="button">○ 학습 완료 표시</button>
+          </div>
+          <h1 class="article-title">K8s &amp; Cilium 부하 테스트 및 성능 측정</h1>
+          <p class="article-lead">kube-burner와 Prometheus/Grafana로 kube-apiserver 부하 시나리오를 측정하고, APF(PriorityAndFairness) 및 Cilium BPF Map·Conntrack GC 튜닝 방안을 정리합니다.</p>
+        </header>
+        
+<section class="article-section">
+  <h2>K8s 1.33 List 스트리밍 개선 및 측정 도구</h2>
+  <p>Kubernetes 1.33에서는 <code>etcd</code>에서 List 응답을 메모리에 모두 올리지 않고 한 개씩 구조체로 만들어 스트리밍 반환·해제하도록 개선되어 OOM 위험이 크게 줄었습니다. <code>kube-prometheus-stack</code>(대시보드 ID 15661, 12006), <code>kube-ops-view</code>, <code>kube-burner</code>를 사용해 3가지 시나리오(단일 배포, 노드 최대 Pod 배포, ConfigMap/Secret 대량 동시 배포)를 측정합니다.</p>
+</section>
+
+<section class="article-section">
+  <h2>kube-apiserver 부하 제어 (API Flag vs APF)</h2>
+  <ul>
+    <li><strong>API Flag:</strong> <code>--max-request-inflight</code>(기본 400), <code>--max-mutating-requests-inflight</code>(기본 200)는 전체 요청에 일괄 적용됩니다.</li>
+    <li><strong>APF (PriorityAndFairness):</strong> <code>FlowSchema</code>와 <code>PriorityLevelConfiguration</code>으로 요청을 분류해 큐별로 유동적 제한이 가능합니다.</li>
+  </ul>
+</section>
+
+<section class="article-section">
+  <h2>Cilium BPF Map 사이즈 & Conntrack GC 튜닝</h2>
+  <p>Cilium은 노드 가용 메모리의 <code>0.25%</code>(<code>ratio: 0.002500</code>)를 BPF Map으로 사용합니다. 대규모 트래픽에서 <code>conntrack map</code>이 가득 차면 신규 Pod/Service 업데이트나 NAT가 실패합니다.</p>
+  <div class="code-box">
+  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>kubectl exec -it -n kube-system ds/cilium -- cilium status --verbose
+# BPF Maps: dynamic sizing: on (ratio: 0.002500)</code></pre>
+</div>
+  <ul>
+    <li><strong>해결책 1 (<code>--bpf-map-dynamic-size-ratio=0.01</code>):</strong> Map 크기를 늘리지만 적용 시 <strong>map flush가 발생해 기존 활성 세션이 끊어지는 순단</strong>에 주의해야 합니다.</li>
+    <li><strong>해결책 2 (<code>--conntrack-gc-interval=10s</code>):</strong> 기본 30초인 Conntrack GC 주기를 단축해 Map Full을 예방합니다(단, 너무 짧으면 CPU 오버헤드 증가).</li>
+    <li><strong>다중 apiserver 지정:</strong> Cilium 1.18부터 <code>--k8s-api-server-urls</code>로 복수의 kube-apiserver 엔드포인트를 지정할 수 있습니다.</li>
+  </ul>
+</section>
+
+        <div style="margin-top:20px; font-size:13.5px; color:var(--text-muted);">
+          <strong>원본 참고:</strong> <a href="https://dobby-isfree.tistory.com/265" target="_blank" rel="noopener noreferrer">https://dobby-isfree.tistory.com/265 ↗</a>
+        </div>
+        <div class="tag-row"><span class="tag">#kube-burner</span><span class="tag">#kube-apiserver</span><span class="tag">#APF</span><span class="tag">#BPF-Map</span><span class="tag">#conntrack-gc</span></div>
+      </article>
+      <nav id="articleNav" class="article-nav"></nav>
+    </main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="../assets/data.js"></script>
+  <script src="../assets/app.js"></script>
+</body>
+</html>

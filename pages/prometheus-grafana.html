@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Prometheus/Grafana를 통한 Cilium 가시성 확보 · Cilium Network Study Blog</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body data-base="../" data-post-id="prometheus-grafana">
+  <header id="topbar" class="topbar"></header>
+  <div class="shell">
+    <aside id="sidebar" class="sidebar"></aside>
+    <main class="workspace">
+      <div class="breadcrumb">
+        <a href="../index.html">전체 대문</a>
+        <span>/</span>
+        <span>02 · 트래픽 가시성 (Observability)</span>
+      </div>
+      <article class="article-card">
+        <header class="article-header">
+          <div class="article-meta-row">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <span class="pill">02 · 트래픽 가시성 (Observability)</span>
+              <span style="font-size:12.5px; color:var(--text-soft);">Jini-99 · 2025. 7. 22.</span>
+            </div>
+            <button id="completeBtn" class="complete-btn" type="button">○ 학습 완료 표시</button>
+          </div>
+          <h1 class="article-title">Prometheus/Grafana를 통한 Cilium 가시성 확보</h1>
+          <p class="article-lead">Cilium·Operator·Hubble의 OpenMetrics 포트를 활성화해 Prometheus로 수집하고, Grafana 대시보드 시각화 및 L7 민감정보 마스킹(--hubble-redact)을 적용합니다.</p>
+        </header>
+        
+<section class="article-section">
+  <h2>모니터링 실습 환경 및 Cilium 메트릭 활성화</h2>
+  <p>Cilium 공식 <code>monitoring-example.yaml</code>과 테스트용 <code>webpod</code>, <code>curl-pod</code>를 배포하고 Grafana(30002), Prometheus(30001)를 NodePort로 노출합니다.</p>
+  <div class="code-box">
+  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>kubectl apply -f https://raw.githubusercontent.com/cilium/cilium/1.17.6/examples/kubernetes/addons/prometheus/monitoring-example.yaml
+
+kubectl patch svc -n cilium-monitoring grafana -p &#x27;{&quot;spec&quot;: {&quot;type&quot;: &quot;NodePort&quot;, &quot;ports&quot;: [{&quot;port&quot;: 3000, &quot;targetPort&quot;: 3000, &quot;nodePort&quot;: 30002}]}}&#x27;
+kubectl patch svc -n cilium-monitoring prometheus -p &#x27;{&quot;spec&quot;: {&quot;type&quot;: &quot;NodePort&quot;, &quot;ports&quot;: [{&quot;port&quot;: 9090, &quot;targetPort&quot;: 9090, &quot;nodePort&quot;: 30001}]}}&#x27;</code></pre>
+</div>
+  <p>Cilium은 기본적으로 Prometheus 메트릭을 노출하지 않으므로 Helm 옵션으로 각 컴포넌트 포트를 열어줍니다.</p>
+  <ul>
+    <li><code>prometheus.enabled=true</code>: cilium-agent에서 <strong>TCP 9962</strong> 노출</li>
+    <li><code>operator.prometheus.enabled=true</code>: cilium-operator에서 <strong>TCP 9963</strong> 노출</li>
+    <li><code>hubble.metrics.enabled</code>: Hubble에서 <strong>TCP 9965</strong> 노출</li>
+  </ul>
+  <div class="code-box">
+  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>helm upgrade --install cilium cilium/cilium --version 1.17.6 --reuse-values \
+  --namespace kube-system \
+  --set prometheus.enabled=true \
+  --set operator.prometheus.enabled=true \
+  --set hubble.enabled=true \
+  --set hubble.metrics.enableOpenMetrics=true \
+  --set hubble.metrics.enabled=&quot;{dns,drop,tcp,flow,port-distribution,icmp,httpV2:exemplars=true;labelsContext=source_ip\,source_namespace\,source_workload\,destination_ip\,destination_namespace\,destination_workload\,traffic_direction}&quot;</code></pre>
+</div>
+</section>
+
+<section class="article-section">
+  <h2>Prometheus & Grafana 데이터 확인</h2>
+  <p>Prometheus는 Pod Annotation을 기반으로 Pull 방식 시계열 메트릭을 수집합니다. 보고자 하는 메트릭이 안 보일 때는 1) Pod Annotation, 2) Prometheus Status 타깃 수집 상태를 우선 확인합니다. Grafana에서는 JSON Import로 커뮤니티 대시보드를 쉽게 추가할 수 있으며 PromQL(<code>rate</code>, <code>sum by</code>, <code>topk</code>)로 집계합니다.</p>
+</section>
+
+<section class="article-section">
+  <h2>Hubble L7 가시성과 민감정보 마스킹 (Redact)</h2>
+  <p>L7 가시성을 위해 <code>l7-visibility</code> CNP를 적용하면 HTTP 요청 Path와 Query 정보까지 Hubble에 노출되는 문제가 생깁니다. 이때 <code>--hubble-redact-enabled</code> 및 <code>--hubble-redact-http-urlquery</code> 옵션을 주면 Path 파라미터는 유지하되 민감한 Query 파라미터는 마스킹할 수 있습니다.</p>
+  <div class="code-box">
+  <div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>apiVersion: &quot;cilium.io/v2&quot;
+kind: CiliumNetworkPolicy
+metadata:
+  name: &quot;l7-visibility&quot;
+spec:
+  endpointSelector:
+    matchLabels:
+      &quot;k8s:io.kubernetes.pod.namespace&quot;: cilium-monitoring
+  egress:
+    - toPorts:
+        - ports:
+            - port: &quot;53&quot;
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: &quot;*&quot;
+    - toEndpoints:
+        - matchLabels:
+            &quot;k8s:io.kubernetes.pod.namespace&quot;: cilium-monitoring
+      toPorts:
+        - ports:
+            - port: &quot;80&quot;
+              protocol: TCP
+            - port: &quot;8080&quot;
+              protocol: TCP
+          rules:
+            http: [{}]</code></pre>
+</div>
+  <div class="code-box">
+  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>helm upgrade cilium cilium/cilium --namespace kube-system --reuse-values \
+  --set extraArgs=&quot;{--hubble-redact-enabled,--hubble-redact-http-urlquery}&quot;</code></pre>
+</div>
+</section>
+
+        <div style="margin-top:20px; font-size:13.5px; color:var(--text-muted);">
+          <strong>원본 참고:</strong> <a href="https://dobby-isfree.tistory.com/254" target="_blank" rel="noopener noreferrer">https://dobby-isfree.tistory.com/254 ↗</a>
+        </div>
+        <div class="tag-row"><span class="tag">#Prometheus</span><span class="tag">#Grafana</span><span class="tag">#PromQL</span><span class="tag">#Metrics</span><span class="tag">#Redact</span></div>
+      </article>
+      <nav id="articleNav" class="article-nav"></nav>
+    </main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="../assets/data.js"></script>
+  <script src="../assets/app.js"></script>
+</body>
+</html>

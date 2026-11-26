@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hubble을 통한 Cilium Traffic 가시성 확보 · Cilium Network Study Blog</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body data-base="../" data-post-id="hubble-observability">
+  <header id="topbar" class="topbar"></header>
+  <div class="shell">
+    <aside id="sidebar" class="sidebar"></aside>
+    <main class="workspace">
+      <div class="breadcrumb">
+        <a href="../index.html">전체 대문</a>
+        <span>/</span>
+        <span>02 · 트래픽 가시성 (Observability)</span>
+      </div>
+      <article class="article-card">
+        <header class="article-header">
+          <div class="article-meta-row">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <span class="pill">02 · 트래픽 가시성 (Observability)</span>
+              <span style="font-size:12.5px; color:var(--text-soft);">Jini-99 · 2025. 7. 21.</span>
+            </div>
+            <button id="completeBtn" class="complete-btn" type="button">○ 학습 완료 표시</button>
+          </div>
+          <h1 class="article-title">Hubble을 통한 Cilium Traffic 가시성 확보</h1>
+          <p class="article-lead">eBPF 커널 레이어에서 처리되는 패킷을 시각화하는 Hubble Relay/UI/CLI 설치와 CiliumNetworkPolicy(L3/L4 및 L7) 연동, Flowlog Export 구성을 정리합니다.</p>
+        </header>
+        
+<section class="article-section">
+  <h2>Hubble 개념과 설치</h2>
+  <p><strong>Hubble</strong>은 Cilium을 기반으로 eBPF를 활용해 트래픽에 대한 가시성을 확보할 수 있는 오픈소스입니다. eBPF를 사용하면 커널 레이어에서 처리되는 것이 많아 가시성 확보가 어려운데 이를 Hubble로 보완합니다.</p>
+  <p>기본적으로 Hubble API는 각 노드의 <code>cilium-agent</code> 범위에서 동작하지만, <code>hubble-relay</code>를 배포하면 클러스터 전체 범위로 확장된 API를 제공합니다. <code>hubble-ui</code>는 내부적으로 nginx를 사용해 NodePort(31234)로 접근할 수 있으며, 외부 통신에는 <code>world</code> identity가 표시됩니다.</p>
+  <div class="code-box">
+  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>helm upgrade cilium cilium/cilium --namespace kube-system --reuse-values \
+  --set hubble.enabled=true \
+  --set hubble.relay.enabled=true \
+  --set hubble.ui.enabled=true \
+  --set hubble.ui.service.type=NodePort \
+  --set hubble.ui.service.nodePort=31234 \
+  --set hubble.export.static.enabled=true \
+  --set hubble.export.static.filePath=/var/run/cilium/hubble/events.log \
+  --set prometheus.enabled=true \
+  --set operator.prometheus.enabled=true \
+  --set hubble.metrics.enableOpenMetrics=true \
+  --set hubble.metrics.enabled=&quot;{dns,drop,tcp,flow,port-distribution,icmp,httpV2:exemplars=true;labelsContext=source_ip\,source_namespace\,source_workload\,destination_ip\,destination_namespace\,destination_workload\,traffic_direction}&quot;</code></pre>
+</div>
+</section>
+
+<section class="article-section">
+  <h2>Hubble CLI 및 Port-Forward</h2>
+  <p>Hubble 클라이언트를 설치하고 <code>cilium hubble port-forward</code>로 로컬 4245 포트를 연결하면 <code>hubble status</code> 및 <code>hubble observe</code>를 바로 사용할 수 있습니다.</p>
+  <div class="code-box">
+  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>HUBBLE_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/hubble/master/stable.txt)
+HUBBLE_ARCH=amd64
+if [ &quot;$(uname -m)&quot; = &quot;aarch64&quot; ]; then HUBBLE_ARCH=arm64; fi
+curl -L --fail --remote-name-all https://github.com/cilium/hubble/releases/download/$HUBBLE_VERSION/hubble-linux-${HUBBLE_ARCH}.tar.gz{,.sha256sum}
+sudo tar xzvfC hubble-linux-${HUBBLE_ARCH}.tar.gz /usr/local/bin
+
+cilium hubble port-forward&amp;
+hubble status
+# Healthcheck (via localhost:4245): Ok
+# Current/Max Flows: 9,801/12,285 (79.78%) Connected Nodes: 3/3</code></pre>
+</div>
+</section>
+
+<section class="article-section">
+  <h2>CiliumNetworkPolicy(CNP) 적용과 Hubble 관측</h2>
+  <p>Star Wars 예제(<code>deathstar</code>, <code>tiefighter</code>, <code>xwing</code>)를 통해 정책 적용 전/후를 비교합니다. CNP의 가장 큰 장점은 <strong>Stateful 연결 정책</strong>을 지원한다는 점입니다. 기존 NetworkPolicy는 A→B를 허용하면 B→A도 열어줘야 했지만, CNP는 단방향 정책만 허용해도 응답 방향은 자동 허용됩니다.</p>
+  <div class="code-box">
+  <div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>apiVersion: &quot;cilium.io/v2&quot;
+kind: CiliumNetworkPolicy
+metadata:
+  name: &quot;rule1&quot;
+spec:
+  description: &quot;L3-L4 policy to restrict deathstar access to empire ships only&quot;
+  endpointSelector:
+    matchLabels:
+      org: empire
+      class: deathstar
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            org: empire
+      toPorts:
+        - ports:
+            - port: &quot;80&quot;
+              protocol: TCP</code></pre>
+</div>
+  <div class="code-box">
+  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code># 차단된 트래픽만 필터링 조회
+hubble observe -f --protocol tcp --pod deathstar --verdict DROPPED
+hubble observe -f --from-identity {id}
+hubble observe -f {pod_name}</code></pre>
+</div>
+
+  <h3>L7 Rule 적용과 cilium-envoy 경로</h3>
+  <p>CNP에 <code>rules.http</code>를 추가하면 Method와 Path 단위 제어가 가능하며, Hubble UI와 <code>hubble observe --protocol http</code>에서 HTTP 응답 코드와 <strong>latency</strong>까지 확인할 수 있습니다. L7 제어 시에는 Daemon 형태의 <code>cilium-envoy</code>를 거칩니다.</p>
+  <div class="code-box">
+  <div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>apiVersion: &quot;cilium.io/v2&quot;
+kind: CiliumNetworkPolicy
+metadata:
+  name: &quot;rule1&quot;
+spec:
+  description: &quot;L7 policy to restrict access to specific HTTP call&quot;
+  endpointSelector:
+    matchLabels:
+      org: empire
+      class: deathstar
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            org: empire
+      toPorts:
+        - ports:
+            - port: &quot;80&quot;
+              protocol: TCP
+          rules:
+            http:
+              - method: &quot;POST&quot;
+                path: &quot;/v1/request-landing&quot;</code></pre>
+</div>
+  <figure class="figure-box">
+  <svg viewBox="0 0 720 140" width="100%" height="auto" role="img" aria-label="Cilium L7 Envoy 처리 흐름">
+    <defs><marker id="arr-h" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 1L10 5L0 9z" fill="#0284c7"/></marker></defs>
+    <rect x="10" y="38" width="115" height="60" rx="8" fill="rgba(2,132,199,0.12)" stroke="#0284c7"/><text x="67" y="65" text-anchor="middle" fill="currentColor" font-size="12" font-weight="700">External Client</text><text x="67" y="83" text-anchor="middle" fill="#64748b" font-size="10">요청 인입</text>
+    <line x1="125" y1="68" x2="152" y2="68" stroke="#0284c7" stroke-width="2" marker-end="url(#arr-h)"/>
+    <rect x="155" y="38" width="125" height="60" rx="8" fill="rgba(6,182,212,0.14)" stroke="#0891b2"/><text x="217" y="65" text-anchor="middle" fill="currentColor" font-size="12" font-weight="700">Cilium BPF (In)</text><text x="217" y="83" text-anchor="middle" fill="#64748b" font-size="10">L3/L4 정책 적용</text>
+    <line x1="280" y1="68" x2="307" y2="68" stroke="#0284c7" stroke-width="2" marker-end="url(#arr-h)"/>
+    <rect x="310" y="38" width="135" height="60" rx="8" fill="rgba(217,119,6,0.12)" stroke="#d97706"/><text x="377" y="65" text-anchor="middle" fill="currentColor" font-size="12" font-weight="700">cilium-envoy</text><text x="377" y="83" text-anchor="middle" fill="#64748b" font-size="10">Daemon (L7 Policy)</text>
+    <line x1="445" y1="68" x2="472" y2="68" stroke="#0284c7" stroke-width="2" marker-end="url(#arr-h)"/>
+    <rect x="475" y="38" width="115" height="60" rx="8" fill="rgba(6,182,212,0.14)" stroke="#0891b2"/><text x="532" y="65" text-anchor="middle" fill="currentColor" font-size="12" font-weight="700">BPF (Post L7)</text><text x="532" y="83" text-anchor="middle" fill="#64748b" font-size="10">최종 Forward</text>
+    <line x1="590" y1="68" x2="615" y2="68" stroke="#0284c7" stroke-width="2" marker-end="url(#arr-h)"/>
+    <rect x="618" y="38" width="92" height="60" rx="8" fill="rgba(22,163,74,0.12)" stroke="#16a34a"/><text x="664" y="65" text-anchor="middle" fill="currentColor" font-size="12" font-weight="700">Target Pod</text><text x="664" y="83" text-anchor="middle" fill="#64748b" font-size="10">Backend</text>
+  </svg>
+  <figcaption class="figure-caption">Cilium L7 정책 적용 시 트래픽 처리 흐름 (사이드카 없는 Daemon 방식)</figcaption>
+</figure>
+</section>
+
+<section class="article-section">
+  <h2>Hubble Flowlog Export (Static vs Dynamic)</h2>
+  <p>콘솔 출력뿐만 아니라 로그 수집 시스템/SIEM 연동을 위해 파일로 저장할 수 있습니다. <code>static</code>은 ConfigMap 수정 후 rollout이 필요하고 1개만 지정 가능한 반면, <code>dynamic</code>은 별도 ConfigMap(<code>cilium-flowlog-config</code>)으로 재시작 없이 자동 반영되며 다수 경로/필터 지정이 가능합니다.</p>
+  <div class="code-box">
+  <div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>export:
+  fileMaxSizeMb: 10
+  fileMaxBackups: 5
+  static:
+    enabled: false
+    filePath: /var/run/cilium/hubble/events.log
+  dynamic:
+    enabled: false
+    config:
+      configMapName: cilium-flowlog-config
+      createConfigMap: true
+      content:
+        - name: all
+          fieldMask: []
+          includeFilters: []
+          excludeFilters: []
+          filePath: &quot;/var/run/cilium/hubble/events.log&quot;</code></pre>
+</div>
+</section>
+
+        <div style="margin-top:20px; font-size:13.5px; color:var(--text-muted);">
+          <strong>원본 참고:</strong> <a href="https://dobby-isfree.tistory.com/253" target="_blank" rel="noopener noreferrer">https://dobby-isfree.tistory.com/253 ↗</a>
+        </div>
+        <div class="tag-row"><span class="tag">#Hubble</span><span class="tag">#Hubble-Relay</span><span class="tag">#Hubble-UI</span><span class="tag">#CNP</span><span class="tag">#L7</span><span class="tag">#cilium-envoy</span><span class="tag">#Flowlog</span></div>
+      </article>
+      <nav id="articleNav" class="article-nav"></nav>
+    </main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="../assets/data.js"></script>
+  <script src="../assets/app.js"></script>
+</body>
+</html>

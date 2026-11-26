@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cilium Security &amp; CiliumNetworkPolicy · Cilium Network Study Blog</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body data-base="../" data-post-id="cilium-network-policy">
+  <header id="topbar" class="topbar"></header>
+  <div class="shell">
+    <aside id="sidebar" class="sidebar"></aside>
+    <main class="workspace">
+      <div class="breadcrumb">
+        <a href="../index.html">전체 대문</a>
+        <span>/</span>
+        <span>06 · 성능 측정 &amp; 보안 (Security)</span>
+      </div>
+      <article class="article-card">
+        <header class="article-header">
+          <div class="article-meta-row">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <span class="pill">06 · 성능 측정 &amp; 보안 (Security)</span>
+              <span style="font-size:12.5px; color:var(--text-soft);">Jini-99 · 2025. 9. 6.</span>
+            </div>
+            <button id="completeBtn" class="complete-btn" type="button">○ 학습 완료 표시</button>
+          </div>
+          <h1 class="article-title">Cilium Security &amp; CiliumNetworkPolicy</h1>
+          <p class="article-lead">Pod Labels 기반 Identity 개념과 CiliumEndpoint(CEP), 그리고 Label·L4 Port·HTTP Path·FQDN(DNS) 기반 CiliumNetworkPolicy 실습 및 실무 적용 고찰을 정리합니다.</p>
+        </header>
+        
+<section class="article-section">
+  <h2>Cilium Identity와 CiliumEndpoint (CEP)</h2>
+  <p>Cilium은 보안을 적용할 때 <strong>Identity</strong> 개념을 사용합니다. <code>kubectl get cep</code>로 조회할 수 있으며, <code>id</code>는 Pod별 고유 Endpoint ID인 반면 <code>identity.id</code>는 Pod Labels를 기반으로 산정되므로 동일한 보안 정책이 적용되는 파드들은 같은 Identity ID를 공유할 수 있습니다.</p>
+  <p>CNP가 없으면 기본 All Allow이지만, <strong>CNP가 하나라도 적용되면 해당 Endpoint는 기본 차단(Default Deny)으로 전환</strong>되므로 주의해야 합니다. L3/L4는 <code>cilium-agent</code>가, L7은 <code>cilium-envoy</code>가 처리합니다.</p>
+</section>
+
+<section class="article-section">
+  <h2>4가지 CiliumNetworkPolicy 실습 패턴</h2>
+  <div class="code-box">
+  <div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code># 1. Label 제어 (role=backend는 role=frontend만 허용)
+apiVersion: &quot;cilium.io/v2&quot;
+kind: CiliumNetworkPolicy
+metadata:
+  name: &quot;l3-rule&quot;
+spec:
+  endpointSelector:
+    matchLabels:
+      role: backend
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            role: frontend
+---
+# 2. L4 Port 제어 (TCP 80 허용, 81 Drop)
+apiVersion: &quot;cilium.io/v2&quot;
+kind: CiliumNetworkPolicy
+metadata:
+  name: &quot;l4-rule&quot;
+spec:
+  endpointSelector:
+    matchLabels:
+      app: myService
+  egress:
+    - toPorts:
+        - ports:
+            - port: &quot;80&quot;
+              protocol: TCP
+---
+# 3. L7 Port + Path 제어 (GET /public만 허용)
+apiVersion: &quot;cilium.io/v2&quot;
+kind: CiliumNetworkPolicy
+metadata:
+  name: &quot;rule1&quot;
+spec:
+  endpointSelector:
+    matchLabels:
+      app: service
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            env: prod
+      toPorts:
+        - ports:
+            - port: &quot;80&quot;
+              protocol: TCP
+          rules:
+            http:
+              - method: &quot;GET&quot;
+                path: &quot;/public&quot;
+---
+# 4. FQDN(DNS) 도메인 제어 (kube-dns 허용 + cilium.io만 허용)
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: tofqdn-dns-visibility
+spec:
+  endpointSelector:
+    matchLabels:
+      app: service
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: &quot;53&quot;
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: &quot;*&quot;
+    - toFQDNs:
+        - matchName: cilium.io
+        - matchPattern: &quot;*.sub.cilium.io&quot;</code></pre>
+</div>
+  <div class="blockquote">
+    실무 적용 회고: NetworkPolicy는 필요한 대상 통신을 모두 파악하기 어렵고 휴먼 에러 시 서비스 장애 영향도가 커서 운영 부담이 큽니다. 상황에 따라 Istio Sidecar CRD 등 대안과 영향도를 함께 고려해 적용해야 합니다.
+  </div>
+</section>
+
+        <div style="margin-top:20px; font-size:13.5px; color:var(--text-muted);">
+          <strong>원본 참고:</strong> <a href="https://dobby-isfree.tistory.com/267" target="_blank" rel="noopener noreferrer">https://dobby-isfree.tistory.com/267 ↗</a>
+        </div>
+        <div class="tag-row"><span class="tag">#Identity</span><span class="tag">#CiliumEndpoint</span><span class="tag">#CiliumNetworkPolicy</span><span class="tag">#toPorts</span><span class="tag">#toFQDNs</span></div>
+      </article>
+      <nav id="articleNav" class="article-nav"></nav>
+    </main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="../assets/data.js"></script>
+  <script src="../assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>L7 Aware Traffic Management (Envoy) · Cilium Network Study Blog</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body data-base="../" data-post-id="l7-traffic-management">
+  <header id="topbar" class="topbar"></header>
+  <div class="shell">
+    <aside id="sidebar" class="sidebar"></aside>
+    <main class="workspace">
+      <div class="breadcrumb">
+        <a href="../index.html">전체 대문</a>
+        <span>/</span>
+        <span>05 · Service Mesh &amp; L7 트래픽 제어</span>
+      </div>
+      <article class="article-card">
+        <header class="article-header">
+          <div class="article-meta-row">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <span class="pill">05 · Service Mesh &amp; L7 트래픽 제어</span>
+              <span style="font-size:12.5px; color:var(--text-soft);">Jini-99 · 2025. 8. 24.</span>
+            </div>
+            <button id="completeBtn" class="complete-btn" type="button">○ 학습 완료 표시</button>
+          </div>
+          <h1 class="article-title">L7 Aware Traffic Management (Envoy)</h1>
+          <p class="article-lead">CiliumEnvoyConfig(CEC)와 CiliumClusterwideEnvoyConfig(CCEC)를 이용한 L7 로드밸런싱, URL Rewriting, Circuit Breaking, Canary Traffic Shifting을 다룹니다.</p>
+        </header>
+        
+<section class="article-section">
+  <h2>사전 설정 (envoyConfig 활성화)</h2>
+  <div class="code-box">
+  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>helm upgrade cilium cilium/cilium --version 1.18.1 --namespace kube-system --reuse-values \
+  --set ingressController.enabled=true --set gatewayAPI.enabled=false \
+  --set envoyConfig.enabled=true --set loadBalancer.l7.backend=envoy
+kubectl -n kube-system rollout restart deployment/cilium-operator ds/cilium ds/cilium-envoy</code></pre>
+</div>
+</section>
+
+<section class="article-section">
+  <h2>4가지 L7 트래픽 제어 시나리오</h2>
+  <ul>
+    <li><strong>L7 Load Balancing:</strong> <code>CiliumNetworkPolicy</code>의 <code>rules.http</code>(<code>method: GET</code>, <code>path: "/"</code>)로 특정 HTTP 메서드·경로만 허용 (DNS 53번 포트 허용 필수).</li>
+    <li><strong>L7 URL Rewriting:</strong> CCEC에서 Envoy <code>regex_rewrite</code>(<code>^/foo.*$</code> → <code>/</code>)와 50:50 가중치 분배를 정의. (Envoy 설정이 매우 복잡하고 유효성 검증이 불친절하다는 실무 체감 주의)</li>
+    <li><strong>L7 Circuit Breaking:</strong> <code>circuit_breakers.thresholds</code>(<code>max_pending_requests: 1</code>, <code>max_requests: 2</code>)로 과부하 시 일부 요청을 503으로 차단해 장애 확산을 방지.</li>
+    <li><strong>L7 Traffic Shifting:</strong> <code>weighted_clusters</code>로 <code>helloworld-v1</code>(90%) / <code>helloworld-v2</code>(10%) 카나리 트래픽 비율 조정.</li>
+  </ul>
+  <div class="code-box">
+  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code># Circuit Breaking 동시성 테스트 (xargs -P5로 동시 요청 시 503 발생 확인)
+kubectl exec -it curl-pod -- sh -c &quot;seq 1 20 | xargs -n1 -P5 -I{} curl -s -o /dev/null -w &#x27;%{http_code}\n&#x27; http://echo-service:8080&quot; | sort | uniq -c</code></pre>
+</div>
+</section>
+
+        <div style="margin-top:20px; font-size:13.5px; color:var(--text-muted);">
+          <strong>원본 참고:</strong> <a href="https://dobby-isfree.tistory.com/264" target="_blank" rel="noopener noreferrer">https://dobby-isfree.tistory.com/264 ↗</a>
+        </div>
+        <div class="tag-row"><span class="tag">#CiliumEnvoyConfig</span><span class="tag">#URL-Rewrite</span><span class="tag">#Circuit-Breaking</span><span class="tag">#Traffic-Shifting</span></div>
+      </article>
+      <nav id="articleNav" class="article-nav"></nav>
+    </main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="../assets/data.js"></script>
+  <script src="../assets/app.js"></script>
+</body>
+</html>

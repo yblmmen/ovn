@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hubble Flow Logs 수집 및 Loki 시각화 · Cilium Network Study Blog</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body data-base="../" data-post-id="hubble-loki-logging">
+  <header id="topbar" class="topbar"></header>
+  <div class="shell">
+    <aside id="sidebar" class="sidebar"></aside>
+    <main class="workspace">
+      <div class="breadcrumb">
+        <a href="../index.html">전체 대문</a>
+        <span>/</span>
+        <span>02 · 트래픽 가시성 (Observability)</span>
+      </div>
+      <article class="article-card">
+        <header class="article-header">
+          <div class="article-meta-row">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <span class="pill">02 · 트래픽 가시성 (Observability)</span>
+              <span style="font-size:12.5px; color:var(--text-soft);">Jini-99 · 2025. 7. 23.</span>
+            </div>
+            <button id="completeBtn" class="complete-btn" type="button">○ 학습 완료 표시</button>
+          </div>
+          <h1 class="article-title">Hubble Flow Logs 수집 및 Loki 시각화</h1>
+          <p class="article-lead">Hubble Export로 노드에 저장된 Flow Log(/var/run/cilium/hubble/events.log)를 Promtail + Loki Stack으로 수집해 Grafana에서 조회하는 심화 과제입니다.</p>
+        </header>
+        
+<section class="article-section">
+  <h2>Loki + Promtail + Grafana 아키텍처</h2>
+  <p>Hubble Flow Logs를 중앙 로깅 시스템으로 수집·시각화하기 위해 <code>loki-stack</code>을 Helm으로 배포합니다. Promtail이 DaemonSet으로 각 노드의 <code>/var/run/cilium/hubble</code> 경로를 <code>hostPath</code>로 마운트해 <code>events.log</code>를 읽어 Loki로 전송합니다.</p>
+  <div class="code-box">
+  <div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code># helm template loki grafana/loki-stack -f ./values.yaml -n monitoring
+promtail:
+  enabled: true
+  extraVolumes:
+    - name: cilium-hubble-logs
+      hostPath:
+        path: /var/run/cilium/hubble
+        type: DirectoryOrCreate
+  extraVolumeMounts:
+    - name: cilium-hubble-logs
+      mountPath: /var/run/cilium/hubble
+      readOnly: true
+  config:
+    snippets:
+      scrapeConfigs: |
+        - job_name: cilium-export-log
+          static_configs:
+            - targets:
+                - localhost
+              labels:
+                job: cilium-export-log
+                __path__: /var/run/cilium/hubble/events.log
+      logLevel: info
+      serverPort: 3101
+      clients:
+        - url: http://{{ .Release.Name }}:3100/loki/api/v1/push</code></pre>
+</div>
+</section>
+
+<section class="article-section">
+  <h2>Grafana Loki Datasource 연동 및 트러블슈팅 메모</h2>
+  <ul>
+    <li>Grafana Datasource에 Loki 서비스 주소(네임스페이스 포함, TCP 3100)를 등록한 뒤 Save &amp; Test를 실행합니다.</li>
+    <li>만약 <code>cilium-monitoring</code> 네임스페이스에 이전에 적용한 CNP가 남아 있다면 Loki(monitoring 네임스페이스) 호출이 차단될 수 있으므로 주의해야 합니다.</li>
+    <li><code>loki-stack</code> 차트는 유지보수가 중단되어 라벨 파서 분리가 잘 동작하지 않는 경우가 있어, 실무에서는 별도 <code>promtail</code> Helm 차트 사용이 권장됩니다.</li>
+  </ul>
+</section>
+
+        <div style="margin-top:20px; font-size:13.5px; color:var(--text-muted);">
+          <strong>원본 참고:</strong> <a href="https://dobby-isfree.tistory.com/255" target="_blank" rel="noopener noreferrer">https://dobby-isfree.tistory.com/255 ↗</a>
+        </div>
+        <div class="tag-row"><span class="tag">#Loki</span><span class="tag">#Promtail</span><span class="tag">#loki-stack</span><span class="tag">#FlowLog</span><span class="tag">#Grafana</span></div>
+      </article>
+      <nav id="articleNav" class="article-nav"></nav>
+    </main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="../assets/data.js"></script>
+  <script src="../assets/app.js"></script>
+</body>
+</html>

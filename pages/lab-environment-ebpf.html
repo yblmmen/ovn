@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>테스트 환경 구성과 Cilium 개념 정리 · Cilium Network Study Blog</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body data-base="../" data-post-id="lab-environment-ebpf">
+  <header id="topbar" class="topbar"></header>
+  <div class="shell">
+    <aside id="sidebar" class="sidebar"></aside>
+    <main class="workspace">
+      <div class="breadcrumb">
+        <a href="../index.html">전체 대문</a>
+        <span>/</span>
+        <span>01 · 환경 구성 &amp; eBPF 기초</span>
+      </div>
+      <article class="article-card">
+        <header class="article-header">
+          <div class="article-meta-row">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <span class="pill">01 · 환경 구성 &amp; eBPF 기초</span>
+              <span style="font-size:12.5px; color:var(--text-soft);">Jini-99 · 2025. 7. 17.</span>
+            </div>
+            <button id="completeBtn" class="complete-btn" type="button">○ 학습 완료 표시</button>
+          </div>
+          <h1 class="article-title">테스트 환경 구성과 Cilium 개념 정리</h1>
+          <p class="article-lead">Vagrant + VirtualBox 기반 Kubernetes 1.33 3노드 실습 환경 구축과 iptables의 한계, eBPF 커널 Hook 및 Native Routing 트래픽 검증 과정을 정리합니다.</p>
+        </header>
+        
+<section class="article-section">
+  <h2>학습 배경</h2>
+  <p>가시다님이 주관하시는 Cilium 스터디를 진행하며 각 주제별로 이해한 내용을 정리한 글입니다. 첫 단계는 실습 환경 구성과 Cilium에 대한 기본 개념 및 설치입니다.</p>
+  <ul>
+    <li>아직까지는 부담스럽지 않은 시작 단계이지만, 뒤로 갈수록 점점 깊은 커널·네트워크 개념들이 등장합니다.</li>
+    <li>트래픽 흐름에 대해서는 잘 모르는 분야여서 많이 찾아보았고, 지금까지 커널을 깊게 생각해본 적이 없어 "트래픽은 알아서 흐르겠지"라고만 생각했던 부분을 직접 확인해 보았습니다.</li>
+  </ul>
+</section>
+
+<section class="article-section">
+  <h2>실습 환경 구성 (Vagrant + VirtualBox)</h2>
+  <p>실습 환경은 <strong>Vagrant + VirtualBox</strong>로 구성합니다. 개인적으로 K8s 테스트를 할 때는 <code>kind</code>를 많이 이용했는데, kind에서는 일부 제약이 있어 이번에는 Vagrant로 진행합니다.</p>
+  <ul>
+    <li><strong>Vagrant:</strong> 가상환경을 만들고 쉽게 생성·관리하는 도구</li>
+    <li><strong>VirtualBox:</strong> 가상환경을 만들어주는 하이퍼바이저</li>
+  </ul>
+  <div class="code-box">
+  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>## virtualbox Install
+brew install --cask virtualbox
+vBoxManage -v
+# 7.1.10r169112
+
+## vagrant Install
+brew install --cask vagrant
+vagrant --version
+# Vagrant 2.4.7</code></pre>
+</div>
+  <p>Vagrant는 어떤 구성요소로 가상환경을 만들지 <code>Vagrantfile</code>이 필요하며, <code>vagrant init</code>을 하면 기본 포맷이 만들어집니다. OS 이미지는 HashiCorp(Ubuntu 또는 Rocky Linux 9 등)에서 제공합니다.</p>
+  <div class="code-box">
+  <div class="code-head"><span>ruby</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>vagrant init hashicorp/bionic64
+
+# ---Vagrantfile---
+Vagrant.configure(&quot;2&quot;) do |config|
+  config.vm.box = &quot;hashicorp/bionic64&quot;
+end</code></pre>
+</div>
+  <p>스터디에서는 마스터 노드 1대(<code>k8s-ctr</code>)와 워커 노드 2대(<code>k8s-w1</code>, <code>k8s-w2</code>) 총 3대로 Kubernetes 1.33 클러스터를 구성했습니다. 노드 이미지는 <code>bento/ubuntu-24.04</code>를 사용했습니다.</p>
+  <div class="code-box">
+  <div class="code-head"><span>ruby</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code># Variables
+K8SV = &#x27;1.33.2-1.1&#x27;        # Kubernetes Version : apt list -a kubelet , ex) 1.32.5-1.1
+CONTAINERDV = &#x27;1.7.27-1&#x27;   # Containerd Version : apt list -a containerd.io , ex) 1.6.33-1
+N = 2                      # max number of worker nodes
+
+# Base Image
+BOX_IMAGE = &quot;bento/ubuntu-24.04&quot;
+BOX_VERSION = &quot;202502.21.0&quot;
+# BOX_IMAGE = &quot;rockylinux/9&quot;
+# BOX_VERSION = &quot;6.0.0&quot;
+
+Vagrant.configure(&quot;2&quot;) do |config|
+  #-ControlPlane Node
+  config.vm.define &quot;k8s-ctr&quot; do |subconfig|
+    subconfig.vm.box = BOX_IMAGE
+    subconfig.vm.box_version = BOX_VERSION
+    subconfig.vm.provider &quot;virtualbox&quot; do |vb|
+      vb.customize [&quot;modifyvm&quot;, :id, &quot;--groups&quot;, &quot;/Cilium-Lab&quot;]
+      vb.customize [&quot;modifyvm&quot;, :id, &quot;--nicpromisc2&quot;, &quot;allow-all&quot;]
+      vb.name = &quot;k8s-ctr&quot;
+      vb.cpus = 2
+      vb.memory = 2048
+      vb.linked_clone = true
+    end
+    subconfig.vm.host_name = &quot;k8s-ctr&quot;
+    subconfig.vm.network &quot;private_network&quot;, ip: &quot;192.168.10.100&quot;
+    subconfig.vm.network &quot;forwarded_port&quot;, guest: 22, host: 60000, auto_correct: true, id: &quot;ssh&quot;
+    subconfig.vm.synced_folder &quot;./&quot;, &quot;/vagrant&quot;, disabled: true
+    subconfig.vm.provision &quot;shell&quot;, path: &quot;https://raw.githubusercontent.com/gasida/vagrant-lab/refs/heads/main/cilium-study/1w/init_cfg.sh&quot;, args: [ K8SV, CONTAINERDV ]
+    subconfig.vm.provision &quot;shell&quot;, path: &quot;https://raw.githubusercontent.com/gasida/vagrant-lab/refs/heads/main/cilium-study/1w/k8s-ctr.sh&quot;, args: [ N ]
+  end
+
+  #-Worker Nodes Subnet1
+  (1..N).each do |i|
+    config.vm.define &quot;k8s-w#{i}&quot; do |subconfig|
+      subconfig.vm.box = BOX_IMAGE
+      subconfig.vm.box_version = BOX_VERSION
+      subconfig.vm.provider &quot;virtualbox&quot; do |vb|
+        vb.customize [&quot;modifyvm&quot;, :id, &quot;--groups&quot;, &quot;/Cilium-Lab&quot;]
+        vb.customize [&quot;modifyvm&quot;, :id, &quot;--nicpromisc2&quot;, &quot;allow-all&quot;]
+        vb.name = &quot;k8s-w#{i}&quot;
+        vb.cpus = 2
+        vb.memory = 1536
+        vb.linked_clone = true
+      end
+      subconfig.vm.host_name = &quot;k8s-w#{i}&quot;
+      subconfig.vm.network &quot;private_network&quot;, ip: &quot;192.168.10.10#{i}&quot;
+      subconfig.vm.network &quot;forwarded_port&quot;, guest: 22, host: &quot;6000#{i}&quot;, auto_correct: true, id: &quot;ssh&quot;
+      subconfig.vm.synced_folder &quot;./&quot;, &quot;/vagrant&quot;, disabled: true
+      subconfig.vm.provision &quot;shell&quot;, path: &quot;https://raw.githubusercontent.com/gasida/vagrant-lab/refs/heads/main/cilium-study/1w/init_cfg.sh&quot;, args: [ K8SV, CONTAINERDV ]
+      subconfig.vm.provision &quot;shell&quot;, path: &quot;https://raw.githubusercontent.com/gasida/vagrant-lab/refs/heads/main/cilium-study/1w/k8s-w.sh&quot;
+    end
+  end
+end</code></pre>
+</div>
+
+  <h3>Control Plane 초기화 (kubeadm init)</h3>
+  <p><code>k8s-ctr.sh</code>의 TASK 1에서 <code>kubeadm init</code>이 실행되면 <code>/etc/kubernetes/pki</code>에 인증서·키가 생성되고, <code>/etc/kubernetes/manifest</code>에 etcd, kube-apiserver, controller-manager, scheduler YAML이 생성되어 kubelet이 containerd를 통해 Static Pod로 기동합니다.</p>
+  <div class="code-box">
+  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>echo &quot;[TASK 1] Initial Kubernetes&quot;
+kubeadm init --token 123456.1234567890123456 --token-ttl 0 \
+  --pod-network-cidr=10.244.0.0/16 --service-cidr=10.96.0.0/16 \
+  --apiserver-advertise-address=192.168.10.100 \
+  --cri-socket=unix:///run/containerd/containerd.sock &gt;/dev/null 2&gt;&amp;1</code></pre>
+</div>
+  <p>일반적으로는 <code>kubeadm-init-config.yaml</code>을 작성해 초기화하고 <code>kubeadm token list</code>로 토큰을 확인합니다.</p>
+  <div class="code-box">
+  <div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>apiVersion: kubeadm.k8s.io/v1beta3
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: 192.168.10.100
+  bindPort: 6443
+nodeRegistration:
+  criSocket: unix:///run/containerd/containerd.sock
+---
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: ClusterConfiguration
+networking:
+  podSubnet: 10.244.0.0/16
+  serviceSubnet: 10.96.0.0/16</code></pre>
+</div>
+
+  <h3>Worker Node 조인 및 Node IP 설정</h3>
+  <p>Worker 노드는 Control Plane의 토큰으로 조인합니다. 운영 환경이나 보안을 고려한다면 <code>caCertHashes</code>를 넣어 중간자 공격을 방지해야 합니다. 또한 노드 간 원활한 통신을 위해 <code>eth1</code>(192.168.10.x) IP를 kubelet <code>--node-ip</code>에 반영합니다.</p>
+  <div class="code-box">
+  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>echo &quot;[TASK 1] K8S Controlplane Join&quot;
+kubeadm join --token 123456.1234567890123456 --discovery-token-unsafe-skip-ca-verification 192.168.10.100:6443 &gt;/dev/null 2&gt;&amp;1</code></pre>
+</div>
+  <div class="code-box">
+  <div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>apiVersion: kubeadm.k8s.io/v1beta3
+kind: JoinConfiguration
+discovery:
+  bootstrapToken:
+    apiServerEndpoint: &quot;192.168.10.100:6443&quot;
+    token: &quot;123456.1234567890123456&quot;
+    caCertHashes:
+      - &quot;sha256:9b2453ae661f2a119628edbc3921672b671e0533c7cea627d6e2b084da2260cb&quot;
+nodeRegistration:
+  kubeletExtraArgs:
+    node-ip: &quot;192.168.10.102&quot;</code></pre>
+</div>
+  <div class="code-box">
+  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>NODEIP=$(ip -4 addr show eth1 | grep -oP &#x27;(?&lt;=inet\s)\d+(\.\d+){3}&#x27;)
+sed -i &quot;s/^\(KUBELET_KUBEADM_ARGS=\&quot;\)/\1--node-ip=\${NODEIP} /&quot; /var/lib/kubelet/kubeadm-flags.env
+systemctl daemon-reexec &amp;&amp; systemctl restart kubelet</code></pre>
+</div>
+  <p>여기까지만 진행하면 CNI가 아직 배포되지 않아 각 노드는 <code>NotReady</code> 상태입니다.</p>
+  <figure class="figure-box">
+  <img src="https://img1.daumcdn.net/thumb/R1280x0/?scode=mtistory2&amp;fname=https%3A%2F%2Fblog.kakaocdn.net%2Fdna%2Fbxlsuo%2FbtsPmTdpElJ%2FAAAAAAAAAAAAAAAAAAAAAM5gwvFg8yDtXXKH5SKPPkEYXWgFpCJ1AzS5UYZ_fGYg%2Fimg.png%3Fcredential%3DyqXZFxpELC7KVnFOS48ylbz2pIh7yKj8%26expires%3D1796050799%26allow_ip%3D%26allow_referer%3D%26signature%3D1keT2oCr3GbcibUc1y7o3A56FQ8%253D" alt="CNI가 배포되어 있지 않은 클러스터 상태 (NotReady)" loading="lazy" />
+  <figcaption class="figure-caption">CNI가 배포되어 있지 않은 클러스터 상태 (NotReady)</figcaption>
+</figure>
+  <figure class="figure-box">
+  <img src="https://img1.daumcdn.net/thumb/R1280x0/?scode=mtistory2&amp;fname=https%3A%2F%2Fblog.kakaocdn.net%2Fdna%2FkRaFx%2FbtsPoJG6GOQ%2FAAAAAAAAAAAAAAAAAAAAAAH9C20VGOKh_iJzgl-_5OmONWOI2qacWFzhT7vEjfPS%2Fimg.png%3Fcredential%3DyqXZFxpELC7KVnFOS48ylbz2pIh7yKj8%26expires%3D1796050799%26allow_ip%3D%26allow_referer%3D%26signature%3DUARiaasQLlqisUJGvulohCGroKo%253D" alt="클러스터 기본 구성도 (Pod IP 대역 10.244.0.0/16)" loading="lazy" />
+  <figcaption class="figure-caption">클러스터 기본 구성도 (Pod IP 대역 10.244.0.0/16)</figcaption>
+</figure>
+</section>
+
+<section class="article-section">
+  <h2>Cilium 개념 및 iptables와의 차이</h2>
+  <figure class="figure-box">
+  <img src="https://img1.daumcdn.net/thumb/R1280x0/?scode=mtistory2&amp;fname=https%3A%2F%2Fblog.kakaocdn.net%2Fdna%2FWdsON%2FbtsPn4kG8AP%2FAAAAAAAAAAAAAAAAAAAAALgdfMjjSuSbpJL9nB31_j5FbU3Ep-ZIL5ur-XoO6VqX%2Fimg.png%3Fcredential%3DyqXZFxpELC7KVnFOS48ylbz2pIh7yKj8%26expires%3D1796050799%26allow_ip%3D%26allow_referer%3D%26signature%3DDfROcJdpCVBQFZxhwECQkdVzMT8%253D" alt="COME TO THE eBPF SIDE" loading="lazy" />
+  <figcaption class="figure-caption">COME TO THE eBPF SIDE</figcaption>
+</figure>
+  <p>Cilium은 eBPF 기술을 적용해 커널에 프로그램을 실행함으로써 유연성, 확장성, 보안성을 높이고자 하는 CNI입니다. 기존 <code>iptables</code>는 다음과 같은 3가지 한계가 있었습니다.</p>
+  <ol>
+    <li><strong>단일 트랜잭션 Rule 업데이트:</strong> Rule을 부분 추가/제거하는 것이 아니라 전체를 Save → Apply하는 방식(AWS WAF IPRuleSet과 유사)이라 엔드포인트가 자주 바뀌는 쿠버네티스 대규모 환경에서 시스템 자원 병목이 됩니다.</li>
+    <li><strong>L3/L4 IP·Port 기반의 한계:</strong> L7 애플리케이션 계층을 이해하고 트래픽을 제어하는 데 제약이 있습니다.</li>
+    <li><strong>순차적 체인 매칭 구조:</strong> 상단 Rule부터 순차 비교하므로 Rule이 많아질수록 성능이 저하되고 트러블슈팅이 어렵습니다.</li>
+  </ol>
+  <figure class="figure-box">
+  <img src="https://img1.daumcdn.net/thumb/R1280x0/?scode=mtistory2&amp;fname=https%3A%2F%2Fblog.kakaocdn.net%2Fdna%2FEOhHS%2FbtsPp3GDHq4%2FAAAAAAAAAAAAAAAAAAAAAFrMqwTgB7TURdPoxRaKrNitrrxMvMsK0zctbUsfAk-R%2Fimg.png%3Fcredential%3DyqXZFxpELC7KVnFOS48ylbz2pIh7yKj8%26expires%3D1796050799%26allow_ip%3D%26allow_referer%3D%26signature%3DW47sajP2uA1eC8ONHB5Wqy1oirc%253D" alt="기존 User-Space/네트워크 스택 vs eBPF 네트워킹" loading="lazy" />
+  <figcaption class="figure-caption">기존 User-Space/네트워크 스택 vs eBPF 네트워킹</figcaption>
+</figure>
+  <figure class="figure-box">
+  <img src="https://img1.daumcdn.net/thumb/R1280x0/?scode=mtistory2&amp;fname=https%3A%2F%2Fblog.kakaocdn.net%2Fdna%2Fo7P6Y%2FbtsPqI3ioic%2FAAAAAAAAAAAAAAAAAAAAAKvvIW9MvI8OV7Pk8F1rALe40wi4o7kTMZA2EuSIu5mq%2Fimg.png%3Fcredential%3DyqXZFxpELC7KVnFOS48ylbz2pIh7yKj8%26expires%3D1796050799%26allow_ip%3D%26allow_referer%3D%26signature%3DpLSYLIk1s4dTN5wWv5WGKzu3HnY%253D" alt="Standard Container Networking vs Cilium eBPF Container Networking" loading="lazy" />
+  <figcaption class="figure-caption">Standard Container Networking vs Cilium eBPF Container Networking</figcaption>
+</figure>
+  <p>기존 CNI는 전통적인 리눅스 네트워크 스택을 건너뛰거나 변경하기 어려웠지만, Cilium은 <code>tcx</code> 같은 Hook에 접근해 패킷을 필터링하거나 <code>XDP</code> 같은 특수 모드에서 인터페이스 간 네트워크 제어도 수행합니다.</p>
+</section>
+
+<section class="article-section">
+  <h2>Cilium 설치 (Helm · Native Routing)</h2>
+  <div class="code-box">
+  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>helm repo add cilium https://helm.cilium.io/
+
+helm install cilium cilium/cilium --version 1.17.5 --namespace kube-system \
+  --set k8sServiceHost=192.168.10.100 --set k8sServicePort=6443 \
+  --set ipam.mode=&quot;cluster-pool&quot; \
+  --set kubeProxyReplacement=true \
+  --set ipam.operator.clusterPoolIPv4PodCIDRList={&quot;172.20.0.0/16&quot;} \
+  --set ipv4NativeRoutingCIDR=172.20.0.0/16 \
+  --set autoDirectNodeRoutes=true \
+  --set routingMode=native \
+  --set endpointRoutes.enabled=true \
+  --set installNoConntrackIptablesRules=true \
+  --set bpf.masquerade=true \
+  --set ipv6.enabled=false</code></pre>
+</div>
+  <div class="code-box">
+  <div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code># helm get values cilium 결과
+autoDirectNodeRoutes: true
+bpf:
+  masquerade: true
+debug:
+  enabled: true
+endpointRoutes:
+  enabled: true
+installNoConntrackIptablesRules: true
+ipam:
+  mode: cluster-pool
+  operator:
+    clusterPoolIPv4PodCIDRList:
+      - 172.20.0.0/16
+ipv4NativeRoutingCIDR: 172.20.0.0/16
+ipv6:
+  enabled: false
+k8sServiceHost: 192.168.10.100
+k8sServicePort: 6443
+kubeProxyReplacement: true
+routingMode: native</code></pre>
+</div>
+  <p>Pod를 생성하면 <code>clusterPoolIPv4PodCIDRList</code>에 정의한 <code>172.20.0.0/16</code> 대역으로 Pod IP가 할당됩니다.</p>
+  <figure class="figure-box">
+  <img src="https://img1.daumcdn.net/thumb/R1280x0/?scode=mtistory2&amp;fname=https%3A%2F%2Fblog.kakaocdn.net%2Fdna%2FvYotX%2FbtsPp4yLkoC%2FAAAAAAAAAAAAAAAAAAAAAC3DGBgE2_A7Ivomqewt94Plk88Vwt1aXMi5AeYwU8jj%2Fimg.png%3Fcredential%3DyqXZFxpELC7KVnFOS48ylbz2pIh7yKj8%26expires%3D1796050799%26allow_ip%3D%26allow_referer%3D%26signature%3Dsca0BBM6nwyfkES0X2gW8OeTgf8%253D" alt="Cilium CNI로 172.20.0.0/16 대역이 할당된 Pod 목록" loading="lazy" />
+  <figcaption class="figure-caption">Cilium CNI로 172.20.0.0/16 대역이 할당된 Pod 목록</figcaption>
+</figure>
+</section>
+
+<section class="article-section">
+  <h2>Cilium 트래픽 확인 (lxc 인터페이스 & cilium_lxc 맵)</h2>
+  <p><code>routingMode: native</code> + <code>autoDirectNodeRoutes=true</code>로 설치했으므로 같은 Pod IP 대역(<code>172.20.0.0/16</code>)에 대해서는 별도 NAT 없이 바로 Pod 인터페이스로 라우팅됩니다. Node-1의 <code>nginx1</code>에서 Node-2의 <code>nginx-2</code>로 curl 요청을 보내면 노드 호스트에서는 트래픽이 보이지 않고 <code>nginx-2</code>에서 <code>nginx-1</code>의 Pod IP가 그대로 확인됩니다.</p>
+  <figure class="figure-box">
+  <img src="https://img1.daumcdn.net/thumb/R1280x0/?scode=mtistory2&amp;fname=https%3A%2F%2Fblog.kakaocdn.net%2Fdna%2Fc9RYhA%2FbtsPrqOmAKe%2FAAAAAAAAAAAAAAAAAAAAAJUY9BHf5ERd6G0N1QLeP3uCVfwFwJ_stQLS4ZQdZYpT%2Fimg.png%3Fcredential%3DyqXZFxpELC7KVnFOS48ylbz2pIh7yKj8%26expires%3D1796050799%26allow_ip%3D%26allow_referer%3D%26signature%3DnyCWXDWcPyem1gNPx2QnK7QhWJA%253D" alt="노드 호스트 인터페이스에서는 확인되지 않는 트래픽" loading="lazy" />
+  <figcaption class="figure-caption">노드 호스트 인터페이스에서는 확인되지 않는 트래픽</figcaption>
+</figure>
+  <p>반면 Pod <code>eth0</code>와 매핑된 Cilium <code>lxc</code> 인터페이스에서 <code>tcpdump</code>를 실행하면 트래픽이 정확히 관측됩니다.</p>
+  <figure class="figure-box">
+  <img src="https://img1.daumcdn.net/thumb/R1280x0/?scode=mtistory2&amp;fname=https%3A%2F%2Fblog.kakaocdn.net%2Fdna%2FPyhWd%2FbtsPp04qRa5%2FAAAAAAAAAAAAAAAAAAAAAOjCFyMpUsmDuVLLWni8s6yznEB8eBG3kFvZHmG-34MD%2Fimg.png%3Fcredential%3DyqXZFxpELC7KVnFOS48ylbz2pIh7yKj8%26expires%3D1796050799%26allow_ip%3D%26allow_referer%3D%26signature%3DYFnGK7nxFlM90cYB0QYYbuqUc%252FA%253D" alt="lxc 인터페이스에서 확인되는 트래픽" loading="lazy" />
+  <figcaption class="figure-caption">lxc 인터페이스에서 확인되는 트래픽</figcaption>
+</figure>
+  <div class="code-box">
+  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
+  <pre><code>kubectl exec -it -n kube-system ds/cilium -- cilium endpoint list
+# ENDPOINT 2439 | IDENTITY 40045 | 172.20.0.37 | ready
+
+kubectl exec -it -n kube-system ds/cilium -- cilium endpoint get 2439 | grep lxc
+# &quot;interface-name&quot;: &quot;lxca1b000fd95c4&quot;,</code></pre>
+</div>
+  <p>Cilium은 Pod를 할당할 때 Pod 정보(IP, 인터페이스)를 <code>cilium_lxc</code> 맵에 추가하고, 패킷의 목적지 IP를 확인한 뒤 L2 헤더를 추가해 목적지 Pod의 MAC 정보로 <code>lxc</code> 인터페이스에 바로 라우팅합니다.</p>
+  <figure class="figure-box">
+  <img src="https://img1.daumcdn.net/thumb/R1280x0/?scode=mtistory2&amp;fname=https%3A%2F%2Fblog.kakaocdn.net%2Fdna%2Fc7gQ4B%2FbtsPqKT4Cg7%2FAAAAAAAAAAAAAAAAAAAAAEA9ciRs55obN2MF16xnCvwV9TaGIwLs0IzHJB1_r5ec%2Fimg.png%3Fcredential%3DyqXZFxpELC7KVnFOS48ylbz2pIh7yKj8%26expires%3D1796050799%26allow_ip%3D%26allow_referer%3D%26signature%3DN5BeNUeah26sAPgGyFfo13znZ8o%253D" alt="cilium_lxc 맵과 endpoint list 매핑 확인" loading="lazy" />
+  <figcaption class="figure-caption">cilium_lxc 맵과 endpoint list 매핑 확인</figcaption>
+</figure>
+  <div class="tip-box">
+    <div class="tip-title">핵심 요약</div>
+    <div>Cilium은 커널에 eBPF 프로그램을 직접 심어 Hook을 걸고, <code>cilium_lxc</code> 맵을 통해 커널 라우팅 테이블을 거치지 않고도 원하는 네트워크 동작을 수행합니다.</div>
+  </div>
+</section>
+
+        <div style="margin-top:20px; font-size:13.5px; color:var(--text-muted);">
+          <strong>원본 참고:</strong> <a href="https://dobby-isfree.tistory.com/252" target="_blank" rel="noopener noreferrer">https://dobby-isfree.tistory.com/252 ↗</a>
+        </div>
+        <div class="tag-row"><span class="tag">#Vagrant</span><span class="tag">#VirtualBox</span><span class="tag">#kubeadm</span><span class="tag">#eBPF</span><span class="tag">#tcx</span><span class="tag">#XDP</span><span class="tag">#cilium_lxc</span></div>
+      </article>
+      <nav id="articleNav" class="article-nav"></nav>
+    </main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="../assets/data.js"></script>
+  <script src="../assets/app.js"></script>
+</body>
+</html>
