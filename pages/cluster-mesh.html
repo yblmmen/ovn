@@ -31,27 +31,12 @@
           <h1 class="article-title">Cilium Cluster Mesh 다중 클러스터 연동</h1>
           <p class="article-lead">west와 east 두 개의 kind 클러스터를 Cluster Mesh로 연결해 NAT 없는 Pod-to-Pod 통신과 글로벌 서비스(affinity=local/remote, shared) 제어를 실습합니다.</p>
         </header>
-        
-<section class="article-section">
-  <h2>다중 클러스터 환경 구성 및 nonMasqueradeCIDRs</h2>
-  <p><code>west</code>(PodCIDR <code>10.0.0.0/16</code>, cluster.id=1)와 <code>east</code>(PodCIDR <code>10.1.0.0/16</code>, cluster.id=2) 클러스터를 생성합니다. 핵심은 각 클러스터의 <code>ipv4NativeRoutingCIDR</code>에는 본인 PodCIDR를, <code>ipMasqAgent.config.nonMasqueradeCIDRs</code>에는 상대 클러스터의 PodCIDR를 지정해 클러스터 간 통신 시 NAT를 하지 않도록 하는 것입니다.</p>
-  <div class="code-box">
-  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
-  <pre><code># west 클러스터 설치 예시
-cilium install --version 1.17.6 --set ipam.mode=kubernetes \
+        <section class="article-section"><h2>west / east 클러스터 구성 및 nonMasqueradeCIDRs</h2><p><code>west</code>(PodCIDR <code>10.0.0.0/16</code>, cluster.id=1)와 <code>east</code>(PodCIDR <code>10.1.0.0/16</code>, cluster.id=2) 클러스터를 생성합니다. <code>ipv4NativeRoutingCIDR</code>에는 본인 클러스터 PodCIDR를, <code>nonMasqueradeCIDRs</code>에는 상대 클러스터 PodCIDR를 넣어 클러스터 간 NAT를 비활성화합니다.</p><div class="code-box"><div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div><pre><code>cilium install --version 1.17.6 --set ipam.mode=kubernetes \
   --set kubeProxyReplacement=true --set bpf.masquerade=true \
   --set routingMode=native --set autoDirectNodeRoutes=true \
   --set ipv4NativeRoutingCIDR=10.0.0.0/16 \
   --set ipMasqAgent.enabled=true --set ipMasqAgent.config.nonMasqueradeCIDRs=&#x27;{10.1.0.0/16}&#x27; \
-  --set cluster.name=west --set cluster.id=1 --context kind-west</code></pre>
-</div>
-</section>
-
-<section class="article-section">
-  <h2>Cluster Mesh 3단계 연결 (CA 동기화 → Enable → Connect)</h2>
-  <div class="code-box">
-  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
-  <pre><code># 1. TLS CA 인증서 동기화 (west -&gt; east)
+  --set cluster.name=west --set cluster.id=1 --context kind-west</code></pre></div></section><section class="article-section"><h2>Cluster Mesh 3단계 연결 (CA 동기화 → Enable → Connect)</h2><div class="code-box"><div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div><pre><code># 1. TLS CA 인증서 동기화
 kubectl --context kind-east delete secret -n kube-system cilium-ca
 kubectl --context kind-west get secret -n kube-system cilium-ca -o yaml | kubectl --context kind-east create -f -
 
@@ -61,27 +46,15 @@ cilium clustermesh enable --service-type NodePort --enable-kvstoremesh=false --c
 
 # 3. Mesh 연결 및 상태 확인
 cilium clustermesh connect --context kind-west --destination-context kind-east
-cilium clustermesh status --context kind-west --wait</code></pre>
-</div>
-  <p>연결이 완료되면 두 클러스터의 커널 라우팅 테이블에 상대 클러스터의 PodCIDR 경로가 추가되며, Hubble에서도 원격 클러스터 이름(<code>west</code>/<code>east</code>)이 함께 표시됩니다.</p>
-</section>
-
-<section class="article-section">
-  <h2>Global Service와 affinity=local 운영 전략</h2>
-  <p>서비스에 <code>service.cilium.io/global: "true"</code>를 붙이면 namespace + service name이 동일한 양 클러스터의 Endpoint가 통합됩니다. 다만 기본값에서는 로컬 클러스터와 원격 클러스터로 트래픽이 골고루 분산되므로 지연과 대역폭 비용을 줄이려면 <code>affinity: local</code>을 함께 지정하는 것이 좋습니다.</p>
-  <div class="code-box">
-  <div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div>
-  <pre><code>apiVersion: v1
+cilium clustermesh status --context kind-west --wait
+kwest exec -it -n kube-system ds/cilium -- cilium status --verbose</code></pre></div><p>연결 후 커널 라우팅 테이블에 상대 클러스터의 PodCIDR가 노드 IP로 라우팅되며, Hubble에서도 클러스터 이름(<code>west</code>/<code>east</code>)이 표시됩니다.</p></section><section class="article-section"><h2>Global Service와 affinity=local/remote, shared 제어</h2><p><code>service.cilium.io/global: "true"</code>를 설정하면 namespace + service name이 동일한 서비스의 Endpoint가 양 클러스터에 동기화됩니다. 기본값에서는 로컬·원격 클러스터로 골고루 분산되므로 지연과 클라우드 대역폭 비용을 줄이려면 <code>affinity: local</code>을 설정해야 합니다.</p><div class="code-box"><div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div><pre><code>apiVersion: v1
 kind: Service
 metadata:
   name: webpod
   annotations:
     service.cilium.io/global: &quot;true&quot;
-    service.cilium.io/affinity: &quot;local&quot;   # 로컬 우선 (장애 시 원격 페일오버), remote도 가능
-    service.cilium.io/shared: &quot;true&quot;      # false 설정 시 해당 클러스터 Endpoint 비공유</code></pre>
-</div>
-</section>
-
+    service.cilium.io/affinity: &quot;local&quot;   # local(로컬 우선), remote(원격 우선)
+    service.cilium.io/shared: &quot;true&quot;      # false 설정 시 해당 클러스터 Endpoint 비공유</code></pre></div></section>
         <div style="margin-top:20px; font-size:13.5px; color:var(--text-muted);">
           <strong>원본 참고:</strong> <a href="https://dobby-isfree.tistory.com/261" target="_blank" rel="noopener noreferrer">https://dobby-isfree.tistory.com/261 ↗</a>
         </div>

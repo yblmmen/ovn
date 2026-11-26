@@ -31,35 +31,20 @@
           <h1 class="article-title">Cilium Native + BGP Control Plane 활용</h1>
           <p class="article-lead">FRR 라우터와 BGP 피어링을 맺어 PodCIDR, LoadBalancer IP, ClusterIP를 광고하고 externalTrafficPolicy(Cluster vs Local)에 따른 패킷 경로 차이를 검증합니다.</p>
         </header>
-        
-<section class="article-section">
-  <h2>Cilium BGP Control Plane 구조</h2>
-  <p>Native 모드에서 <code>autoDirectNodeRoutes=false</code>일 때 외부 라우터(FRR)와 BGP 피어링을 맺어 라우팅 테이블을 동적으로 교환합니다. Cilium BGP는 4개의 CRD로 구성됩니다.</p>
-  <ul>
-    <li><strong>CiliumBGPClusterConfig:</strong> 클러스터 단위로 BGP 인스턴스 및 피어를 정의</li>
-    <li><strong>CiliumBGPNodeConfigOverride:</strong> 특정 노드에만 다른 BGP 설정을 오버라이드</li>
-    <li><strong>CiliumBGPPeerConfig:</strong> 타이머, eBGP Multihop, Graceful Restart 등 공통 피어 설정</li>
-    <li><strong>CiliumBGPAdvertisement:</strong> 광고할 대상(PodCIDR, Service LoadBalancerIP/ClusterIP) 선택</li>
-  </ul>
-</section>
-
-<section class="article-section">
-  <h2>FRR 라우터 및 Cilium BGP 설정</h2>
-  <div class="code-box">
-  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
-  <pre><code># Router (/etc/frr/frr.conf)
+        <section class="article-section"><h2>실습 환경 및 Cilium BGP 4대 CRD</h2><p>라우터 노드에 오픈소스 라우팅 데몬 <strong>FRR</strong>이 설치되어 있고, Cilium은 <code>routingMode=native</code>, <code>autoDirectNodeRoutes=false</code>, <code>bgpControlPlane.enabled=true</code>로 배포합니다.</p><ul><li><strong>CiliumBGPClusterConfig:</strong> 클러스터 단위로 BGP 데몬과 피어를 맺는 객체</li><li><strong>CiliumBGPNodeConfigOverride:</strong> 특정 노드에만 다른 BGP 설정을 주입</li><li><strong>CiliumBGPPeerConfig:</strong> 타이머, eBGP Multihop, Graceful Restart 등 공통 피어 설정</li><li><strong>CiliumBGPAdvertisement:</strong> PodCIDR, Service LoadBalancerIP/ClusterIP 등 광고 대상 선택</li></ul></section><section class="article-section"><h2>FRR 라우터 및 Cilium BGP 설정</h2><div class="code-box"><div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div><pre><code># Router (/etc/frr/frr.conf)
 router bgp 65000
  bgp router-id 192.168.10.200
+ bgp graceful-restart
+ no bgp ebgp-requires-policy
+ bgp bestpath as-path multipath-relax
+ maximum-paths 4
+ network 10.10.1.0/24
  neighbor CILIUM peer-group
  neighbor CILIUM remote-as external
  neighbor 192.168.10.100 peer-group CILIUM
  neighbor 192.168.10.101 peer-group CILIUM
  neighbor 192.168.20.100 peer-group CILIUM
-systemctl daemon-reexec &amp;&amp; systemctl restart frr</code></pre>
-</div>
-  <div class="code-box">
-  <div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div>
-  <pre><code># kubectl label nodes k8s-ctr k8s-w0 k8s-w1 enable-bgp=true
+systemctl daemon-reexec &amp;&amp; systemctl restart frr</code></pre></div><div class="code-box"><div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div><pre><code># kubectl label nodes k8s-ctr k8s-w0 k8s-w1 enable-bgp=true
 apiVersion: cilium.io/v2
 kind: CiliumBGPAdvertisement
 metadata:
@@ -105,16 +90,9 @@ spec:
           peerASN: 65000
           peerAddress: 192.168.10.200
           peerConfigRef:
-            name: &quot;cilium-peer&quot;</code></pre>
-</div>
-  <p>Cilium BGP는 Speaker 역할로 경로를 광고하며, 노드 자체의 기본 게이트웨이가 라우터를 향하도록 설정되어 있어야 양방향 통신이 완성됩니다. 대규모 클러스터에서는 kube-apiserver 부하를 줄이기 위해 <code>--set bgpControlPlane.statusReport.enabled=false</code>가 권장됩니다.</p>
-</section>
-
-<section class="article-section">
-  <h2>LoadBalancer IP 광고 & Traffic Policy (Cluster vs Local)</h2>
-  <div class="code-box">
-  <div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div>
-  <pre><code>apiVersion: cilium.io/v2
+            name: &quot;cilium-peer&quot;</code></pre></div><p>Cilium BGP는 Speaker 역할만 하며 수신 경로를 노드 라우팅 테이블에 자동 추가하지 않습니다. 실습 환경에서는 기본 게이트웨이가 <code>eth0</code>이므로 각 노드에 <code>172.20.0.0/16</code>을 라우터로 보내는 경로를 추가해야 양방향 통신이 됩니다. 대규모 클러스터에서는 <code>--set bgpControlPlane.statusReport.enabled=false</code>가 권장됩니다.</p><div class="code-box"><div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div><pre><code>ip route add 172.20.0.0/16 via 192.168.10.200
+sshpass -p &#x27;vagrant&#x27; ssh vagrant@k8s-w1 sudo ip route add 172.20.0.0/16 via 192.168.10.200
+sshpass -p &#x27;vagrant&#x27; ssh vagrant@k8s-w0 sudo ip route add 172.20.0.0/16 via 192.168.20.200</code></pre></div></section><section class="article-section"><h2>LoadBalancer IP · ClusterIP 광고 & TrafficPolicy 비교</h2><div class="code-box"><div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div><pre><code>apiVersion: cilium.io/v2
 kind: CiliumBGPAdvertisement
 metadata:
   name: bgp-advertisements-lb-exip-webpod
@@ -128,14 +106,9 @@ spec:
           - LoadBalancerIP
       selector:
         matchExpressions:
-          - { key: app, operator: In, values: [ webpod ] }</code></pre>
-</div>
-  <ul>
-    <li><strong>externalTrafficPolicy: Cluster:</strong> 매칭되는 Pod가 없는 노드(예: <code>k8s-ctr</code>)도 라우터에 경로가 등록되어, 1차 수신 후 다른 노드로 재라우팅되는 추가 홉이 발생합니다.</li>
-    <li><strong>externalTrafficPolicy: Local:</strong> 실제 매칭 Pod가 존재하는 노드만 라우터에 경로가 등록되어 <code>eth1</code>으로 들어온 패킷이 바로 해당 노드의 <code>lxc</code> 인터페이스로 전달됩니다.</li>
-  </ul>
-</section>
-
+          - { key: app, operator: In, values: [ webpod ] }</code></pre></div><div class="code-box"><div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div><pre><code>kubectl exec -it -n kube-system ds/cilium -- cilium-dbg bgp route-policies
+# 65001 tor-switch-ipv4-PodCIDR                     export 192.168.10.200/32 172.20.1.0/24 accept
+# 65001 tor-switch-ipv4-Service-webpod-LoadBalancerIP export 192.168.10.200/32 172.16.1.1/32 accept</code></pre></div><ul><li><strong>TrafficPolicy = Cluster:</strong> 매칭 Pod가 없는 노드(<code>k8s-ctr</code>)도 라우터에 경로가 등록되어, 1차 수신 후 다시 라우터를 거쳐 다른 노드로 가는 불필요한 홉이 발생합니다.</li><li><strong>TrafficPolicy = Local:</strong> 매칭 Pod가 존재하는 노드로만 라우터 경로가 잡히며, <code>eth1</code>으로 들어온 패킷이 바로 해당 노드의 <code>lxc</code> 인터페이스로 전달됩니다.</li></ul></section>
         <div style="margin-top:20px; font-size:13.5px; color:var(--text-muted);">
           <strong>원본 참고:</strong> <a href="https://dobby-isfree.tistory.com/260" target="_blank" rel="noopener noreferrer">https://dobby-isfree.tistory.com/260 ↗</a>
         </div>

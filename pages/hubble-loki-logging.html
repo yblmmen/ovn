@@ -31,13 +31,7 @@
           <h1 class="article-title">Hubble Flow Logs 수집 및 Loki 시각화</h1>
           <p class="article-lead">Hubble Export로 노드에 저장된 Flow Log(/var/run/cilium/hubble/events.log)를 Promtail + Loki Stack으로 수집해 Grafana에서 조회하는 심화 과제입니다.</p>
         </header>
-        
-<section class="article-section">
-  <h2>Loki + Promtail + Grafana 아키텍처</h2>
-  <p>Hubble Flow Logs를 중앙 로깅 시스템으로 수집·시각화하기 위해 <code>loki-stack</code>을 Helm으로 배포합니다. Promtail이 DaemonSet으로 각 노드의 <code>/var/run/cilium/hubble</code> 경로를 <code>hostPath</code>로 마운트해 <code>events.log</code>를 읽어 Loki로 전송합니다.</p>
-  <div class="code-box">
-  <div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div>
-  <pre><code># helm template loki grafana/loki-stack -f ./values.yaml -n monitoring
+        <section class="article-section"><h2>loki-stack 설치 및 Promtail hostPath 마운트</h2><p>Promtail이 DaemonSet으로 설치되어 각 노드의 <code>/var/run/cilium/hubble/events.log</code>를 <code>hostPath</code>로 읽어 Loki로 전송합니다.</p><div class="code-box"><div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div><pre><code># helm template loki grafana/loki-stack -f ./values.yaml -n monitoring
 promtail:
   enabled: true
   extraVolumes:
@@ -62,19 +56,7 @@ promtail:
       logLevel: info
       serverPort: 3101
       clients:
-        - url: http://{{ .Release.Name }}:3100/loki/api/v1/push</code></pre>
-</div>
-</section>
-
-<section class="article-section">
-  <h2>Grafana Loki Datasource 연동 및 트러블슈팅 메모</h2>
-  <ul>
-    <li>Grafana Datasource에 Loki 서비스 주소(네임스페이스 포함, TCP 3100)를 등록한 뒤 Save &amp; Test를 실행합니다.</li>
-    <li>만약 <code>cilium-monitoring</code> 네임스페이스에 이전에 적용한 CNP가 남아 있다면 Loki(monitoring 네임스페이스) 호출이 차단될 수 있으므로 주의해야 합니다.</li>
-    <li><code>loki-stack</code> 차트는 유지보수가 중단되어 라벨 파서 분리가 잘 동작하지 않는 경우가 있어, 실무에서는 별도 <code>promtail</code> Helm 차트 사용이 권장됩니다.</li>
-  </ul>
-</section>
-
+        - url: http://{{ .Release.Name }}:3100/loki/api/v1/push</code></pre></div></section><section class="article-section"><h2>Grafana Loki Datasource 연동 및 주의사항</h2><ul><li>Loki가 다른 네임스페이스(<code>monitoring</code>)에 있으므로 Datasource URL에 네임스페이스까지 정확히 입력해 Save &amp; Test를 수행합니다.</li><li>이전 실습에서 <code>cilium-monitoring</code>에 CNP를 적용해두고 삭제하지 않으면 Loki(3100)로의 연결이 차단(Drop)됩니다.</li><li><code>loki-stack</code> 차트는 유지보수가 중단되어 라벨 파서 분리가 매끄럽지 않으므로 별도 <code>promtail</code> 차트를 사용하는 것이 권장됩니다.</li></ul></section>
         <div style="margin-top:20px; font-size:13.5px; color:var(--text-muted);">
           <strong>원본 참고:</strong> <a href="https://dobby-isfree.tistory.com/255" target="_blank" rel="noopener noreferrer">https://dobby-isfree.tistory.com/255 ↗</a>
         </div>

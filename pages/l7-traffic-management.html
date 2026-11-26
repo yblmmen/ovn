@@ -31,33 +31,12 @@
           <h1 class="article-title">L7 Aware Traffic Management (Envoy)</h1>
           <p class="article-lead">CiliumEnvoyConfig(CEC)와 CiliumClusterwideEnvoyConfig(CCEC)를 이용한 L7 로드밸런싱, URL Rewriting, Circuit Breaking, Canary Traffic Shifting을 다룹니다.</p>
         </header>
-        
-<section class="article-section">
-  <h2>사전 설정 (envoyConfig 활성화)</h2>
-  <div class="code-box">
-  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
-  <pre><code>helm upgrade cilium cilium/cilium --version 1.18.1 --namespace kube-system --reuse-values \
+        <section class="article-section"><h2>사전 설정 (envoyConfig 활성화)</h2><div class="code-box"><div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div><pre><code>helm upgrade cilium cilium/cilium --version 1.18.1 --namespace kube-system --reuse-values \
   --set ingressController.enabled=true --set gatewayAPI.enabled=false \
   --set envoyConfig.enabled=true --set loadBalancer.l7.backend=envoy
-kubectl -n kube-system rollout restart deployment/cilium-operator ds/cilium ds/cilium-envoy</code></pre>
-</div>
-</section>
-
-<section class="article-section">
-  <h2>4가지 L7 트래픽 제어 시나리오</h2>
-  <ul>
-    <li><strong>L7 Load Balancing:</strong> <code>CiliumNetworkPolicy</code>의 <code>rules.http</code>(<code>method: GET</code>, <code>path: "/"</code>)로 특정 HTTP 메서드·경로만 허용 (DNS 53번 포트 허용 필수).</li>
-    <li><strong>L7 URL Rewriting:</strong> CCEC에서 Envoy <code>regex_rewrite</code>(<code>^/foo.*$</code> → <code>/</code>)와 50:50 가중치 분배를 정의. (Envoy 설정이 매우 복잡하고 유효성 검증이 불친절하다는 실무 체감 주의)</li>
-    <li><strong>L7 Circuit Breaking:</strong> <code>circuit_breakers.thresholds</code>(<code>max_pending_requests: 1</code>, <code>max_requests: 2</code>)로 과부하 시 일부 요청을 503으로 차단해 장애 확산을 방지.</li>
-    <li><strong>L7 Traffic Shifting:</strong> <code>weighted_clusters</code>로 <code>helloworld-v1</code>(90%) / <code>helloworld-v2</code>(10%) 카나리 트래픽 비율 조정.</li>
-  </ul>
-  <div class="code-box">
-  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
-  <pre><code># Circuit Breaking 동시성 테스트 (xargs -P5로 동시 요청 시 503 발생 확인)
-kubectl exec -it curl-pod -- sh -c &quot;seq 1 20 | xargs -n1 -P5 -I{} curl -s -o /dev/null -w &#x27;%{http_code}\n&#x27; http://echo-service:8080&quot; | sort | uniq -c</code></pre>
-</div>
-</section>
-
+kubectl -n kube-system rollout restart deployment/cilium-operator ds/cilium ds/cilium-envoy
+cilium config view | grep -i envoy</code></pre></div></section><section class="article-section"><h2>4가지 L7 트래픽 제어 시나리오</h2><ul><li><strong>L7 Load Balancing:</strong> <code>CiliumNetworkPolicy</code>에서 <code>GET /</code>만 허용 (<code>/foo</code> 및 <code>POST</code>는 Drop).</li><li><strong>L7 URL Rewriting:</strong> CCEC에서 Envoy <code>regex_rewrite</code>(<code>^/foo.*$</code> → <code>/</code>)와 50:50 가중치 분배를 설정.</li><li><strong>L7 Circuit Breaking:</strong> <code>circuit_breakers.thresholds</code>(<code>max_pending_requests: 1</code>, <code>max_requests: 2</code>)로 장애 확산을 방지(503 반환).</li><li><strong>L7 Traffic Shifting:</strong> <code>weighted_clusters</code>로 <code>helloworld-v1</code>(90%) / <code>helloworld-v2</code>(10%) 카나리 트래픽 비율 조정.</li></ul><div class="code-box"><div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div><pre><code># Circuit Breaking 동시성(-P5) 테스트
+kubectl exec -it curl-pod -- sh -c &quot;seq 1 20 | xargs -n1 -P5 -I{} curl -s -o /dev/null -w &#x27;%{http_code}\n&#x27; http://echo-service:8080&quot; | sort | uniq -c</code></pre></div></section>
         <div style="margin-top:20px; font-size:13.5px; color:var(--text-muted);">
           <strong>원본 참고:</strong> <a href="https://dobby-isfree.tistory.com/264" target="_blank" rel="noopener noreferrer">https://dobby-isfree.tistory.com/264 ↗</a>
         </div>

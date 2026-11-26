@@ -31,49 +31,15 @@
           <h1 class="article-title">Service Mesh Ingress Support</h1>
           <p class="article-lead">사이드카 없이 eBPF + Daemon 형태의 cilium-envoy(TPROXY)로 동작하는 Cilium Ingress Controller와 shared/dedicated 모드, mkcert TLS Termination을 다룹니다.</p>
         </header>
-        
-<section class="article-section">
-  <h2>Cilium Service Mesh와 Ingress 트래픽 흐름</h2>
-  <p>Cilium Service Mesh는 Istio와 달리 Pod마다 사이드카를 두지 않고, L3/L4는 커널 eBPF로, L7은 노드당 Daemon으로 동작하는 <code>cilium-envoy</code>로 처리합니다.</p>
-  <ol>
-    <li>클라이언트 트래픽이 <code>cilium-ingress</code> LoadBalancer 서비스로 인입</li>
-    <li>Cilium eBPF가 감지해 가상의 <code>reserved:ingress</code> IP로 매핑</li>
-    <li><code>TPROXY</code>를 통해 <code>cilium-envoy</code> Pod로 리다이렉션 (따라서 일반 tcpdump에서는 중간 논리 과정이 보이지 않음)</li>
-    <li>Envoy가 Ingress Rule을 검사한 뒤 최종 Backend Pod로 전달 (Client Real IP 보존)</li>
-  </ol>
-  <div class="code-box">
-  <div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div>
-  <pre><code>--set ingressController.enabled=true \
+        <section class="article-section"><h2>Cilium Service Mesh와 Ingress 트래픽 흐름</h2><p>Cilium Service Mesh는 Pod마다 사이드카를 두지 않고 L3/L4는 eBPF로, L7은 노드당 Daemon 형태인 <code>cilium-envoy</code>로 처리합니다.</p><ol><li>클라이언트 트래픽이 <code>cilium-ingress</code> LoadBalancer 서비스로 인입</li><li>Cilium eBPF가 감지해 가상의 <code>reserved:ingress</code> IP로 매핑</li><li><code>TPROXY</code>를 통해 <code>cilium-envoy</code>로 리다이렉션 (따라서 일반 <code>tcpdump</code>나 <code>pwru</code>에는 가상 IP 처리 과정이 보이지 않음)</li><li>Envoy가 Ingress Rule 검사 후 최종 Backend Pod로 전달 (동일 노드의 Envoy를 활용해 Client Real IP 보존)</li></ol><div class="code-box"><div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div><pre><code>--set ingressController.enabled=true \
 --set ingressController.loadbalancerMode=shared \
---set loadBalancer.l7.backend=envoy</code></pre>
-</div>
-</section>
+--set loadBalancer.l7.backend=envoy
 
-<section class="article-section">
-  <h2>Shared vs Dedicated 모드 & Path Type / TLS Termination</h2>
-  <ul>
-    <li><strong>shared 모드:</strong> 여러 Ingress가 단일 <code>cilium-ingress</code> LB IP를 공유합니다.</li>
-    <li><strong>dedicated 모드:</strong> Ingress에 <code>ingress.cilium.io/loadbalancer-mode: dedicated</code> 어노테이션을 추가하면 독립 LB 서비스가 생성됩니다.</li>
-    <li><strong>PathType:</strong> <code>Exact</code>, <code>Prefix</code> 외에 <code>ImplementationSpecific</code>을 쓰면 Envoy 정규표현식(예: <code>/impl.+</code>) 라우팅이 가능합니다.</li>
-    <li><strong>TLS Termination:</strong> <code>mkcert '*.cilium.rocks'</code>로 인증서를 발급해 Secret(<code>demo-cert</code>)으로 등록하고 Ingress <code>spec.tls</code>에 연결하면 HTTPS 종단 처리를 수행합니다.</li>
-  </ul>
-  <div class="code-box">
-  <div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div>
-  <pre><code>apiVersion: &quot;cilium.io/v2&quot;
-kind: CiliumClusterwideNetworkPolicy
-metadata:
-  name: &quot;allow-cidr&quot;
-spec:
-  endpointSelector:
-    matchExpressions:
-      - key: reserved:ingress
-        operator: Exists
-  ingress:
-    - fromCIDRSet:
-        - cidr: 192.168.10.200/32</code></pre>
-</div>
-</section>
-
+kubectl exec -it -n kube-system ds/cilium -- cilium ip list | grep ingress
+# 172.20.0.173/32   reserved:ingress
+# 172.20.1.110/32   reserved:ingress</code></pre></div></section><section class="article-section"><h2>Shared vs Dedicated, Clusterwide Policy, PathType, mkcert TLS</h2><ul><li><strong>shared vs dedicated:</strong> 어노테이션 <code>ingress.cilium.io/loadbalancer-mode: dedicated</code>를 주면 별도 LB 서비스가 분리됩니다.</li><li><strong>ingress-nginx 공존:</strong> 기존 <code>ingressClassName: nginx</code>와 함께 사용할 수 있습니다.</li><li><strong>CiliumClusterwideNetworkPolicy:</strong> <code>reserved:ingress</code> 엔드포인트에 대해 <code>fromCIDRSet</code>으로 인입 IP를 제한할 수 있습니다.</li><li><strong>PathType:</strong> <code>Exact</code>, <code>Prefix</code>, <code>ImplementationSpecific</code>(Envoy 정규표현식 지원)</li><li><strong>TLS Termination:</strong> <code>mkcert '*.cilium.rocks'</code>로 인증서를 발급하고 <code>kubectl create secret tls demo-cert</code> 후 Ingress <code>spec.tls</code>에 연결합니다.</li></ul><div class="code-box"><div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div><pre><code>mkcert &#x27;*.cilium.rocks&#x27;
+kubectl create secret tls demo-cert --key=_wildcard.cilium.rocks-key.pem --cert=_wildcard.cilium.rocks.pem
+mkcert -install</code></pre></div></section>
         <div style="margin-top:20px; font-size:13.5px; color:var(--text-muted);">
           <strong>원본 참고:</strong> <a href="https://dobby-isfree.tistory.com/262" target="_blank" rel="noopener noreferrer">https://dobby-isfree.tistory.com/262 ↗</a>
         </div>

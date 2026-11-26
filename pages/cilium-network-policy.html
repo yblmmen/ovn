@@ -31,18 +31,7 @@
           <h1 class="article-title">Cilium Security &amp; CiliumNetworkPolicy</h1>
           <p class="article-lead">Pod Labels 기반 Identity 개념과 CiliumEndpoint(CEP), 그리고 Label·L4 Port·HTTP Path·FQDN(DNS) 기반 CiliumNetworkPolicy 실습 및 실무 적용 고찰을 정리합니다.</p>
         </header>
-        
-<section class="article-section">
-  <h2>Cilium Identity와 CiliumEndpoint (CEP)</h2>
-  <p>Cilium은 보안을 적용할 때 <strong>Identity</strong> 개념을 사용합니다. <code>kubectl get cep</code>로 조회할 수 있으며, <code>id</code>는 Pod별 고유 Endpoint ID인 반면 <code>identity.id</code>는 Pod Labels를 기반으로 산정되므로 동일한 보안 정책이 적용되는 파드들은 같은 Identity ID를 공유할 수 있습니다.</p>
-  <p>CNP가 없으면 기본 All Allow이지만, <strong>CNP가 하나라도 적용되면 해당 Endpoint는 기본 차단(Default Deny)으로 전환</strong>되므로 주의해야 합니다. L3/L4는 <code>cilium-agent</code>가, L7은 <code>cilium-envoy</code>가 처리합니다.</p>
-</section>
-
-<section class="article-section">
-  <h2>4가지 CiliumNetworkPolicy 실습 패턴</h2>
-  <div class="code-box">
-  <div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div>
-  <pre><code># 1. Label 제어 (role=backend는 role=frontend만 허용)
+        <section class="article-section"><h2>Identity & CiliumEndpoint (CEP)</h2><p><code>kubectl get cep</code>로 확인하는 <code>id</code>는 Pod별 고유 Endpoint ID이고, <code>identity.id</code>는 Pod Labels 기반의 보안 그룹 ID입니다. CNP가 없으면 기본 All Allow이지만, <strong>CNP가 적용되면 기본 정책이 차단(Default Deny)</strong>으로 바뀝니다. L3/L4는 <code>cilium-agent</code>, L7은 <code>cilium-envoy</code>가 처리합니다.</p></section><section class="article-section"><h2>4가지 CNP 실습 (Label · L4 Port · L7 Path · FQDN)</h2><div class="code-box"><div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div><pre><code># 1. Label 제어
 apiVersion: &quot;cilium.io/v2&quot;
 kind: CiliumNetworkPolicy
 metadata:
@@ -56,7 +45,7 @@ spec:
         - matchLabels:
             role: frontend
 ---
-# 2. L4 Port 제어 (TCP 80 허용, 81 Drop)
+# 2. L4 Port 제어
 apiVersion: &quot;cilium.io/v2&quot;
 kind: CiliumNetworkPolicy
 metadata:
@@ -71,7 +60,7 @@ spec:
             - port: &quot;80&quot;
               protocol: TCP
 ---
-# 3. L7 Port + Path 제어 (GET /public만 허용)
+# 3. L7 Port + Path 제어 (/public만 허용)
 apiVersion: &quot;cilium.io/v2&quot;
 kind: CiliumNetworkPolicy
 metadata:
@@ -93,7 +82,7 @@ spec:
               - method: &quot;GET&quot;
                 path: &quot;/public&quot;
 ---
-# 4. FQDN(DNS) 도메인 제어 (kube-dns 허용 + cilium.io만 허용)
+# 4. FQDN(DNS) 도메인 제어
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -116,13 +105,7 @@ spec:
               - matchPattern: &quot;*&quot;
     - toFQDNs:
         - matchName: cilium.io
-        - matchPattern: &quot;*.sub.cilium.io&quot;</code></pre>
-</div>
-  <div class="blockquote">
-    실무 적용 회고: NetworkPolicy는 필요한 대상 통신을 모두 파악하기 어렵고 휴먼 에러 시 서비스 장애 영향도가 커서 운영 부담이 큽니다. 상황에 따라 Istio Sidecar CRD 등 대안과 영향도를 함께 고려해 적용해야 합니다.
-  </div>
-</section>
-
+        - matchPattern: &quot;*.sub.cilium.io&quot;</code></pre></div><div class="blockquote">실무 회고: NetworkPolicy는 필요한 대상 통신 파악이 어렵고 휴먼 에러 시 장애 영향도가 큽니다. 상황에 따라 Istio Sidecar CRD 등 대안과 운영 가능성을 함께 고려해 적용해야 합니다.</div></section>
         <div style="margin-top:20px; font-size:13.5px; color:var(--text-muted);">
           <strong>원본 참고:</strong> <a href="https://dobby-isfree.tistory.com/267" target="_blank" rel="noopener noreferrer">https://dobby-isfree.tistory.com/267 ↗</a>
         </div>
