@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Local Redirect Policy (LRP) 공식문서 정리 · Cilium Network Study Blog</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body data-base="../" data-post-id="local-redirect-policy">
+  <header id="topbar" class="topbar"></header>
+  <div class="shell">
+    <aside id="sidebar" class="sidebar"></aside>
+    <main class="workspace">
+      <div class="breadcrumb">
+        <a href="../index.html">전체 대문</a>
+        <span>/</span>
+        <span>03 · Node &amp; Pod 네트워크 통신</span>
+      </div>
+      <article class="article-card">
+        <header class="article-header">
+          <div class="article-meta-row">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <span class="pill">03 · Node &amp; Pod 네트워크 통신</span>
+              <span style="font-size:12.5px; color:var(--text-soft);">Jini-99 · 2025. 7. 31.</span>
+            </div>
+            <button id="completeBtn" class="complete-btn" type="button">○ 학습 완료 표시</button>
+          </div>
+          <h1 class="article-title">Local Redirect Policy (LRP) 공식문서 정리</h1>
+          <p class="article-lead">eBPF를 이용해 특정 IP/포트(AddressMatcher) 또는 ClusterIP 서비스(ServiceMatcher)로 향하는 파드 트래픽을 동일 노드의 로컬 백엔드 파드로 리다이렉션하는 정책입니다.</p>
+        </header>
+        <section class="article-section"><h2>Local Redirect Policy 개요 및 2가지 매칭 모드</h2><p><code>localRedirectPolicies.enabled=true</code>로 활성화하며, 백엔드 파드의 네임스페이스는 정책의 네임스페이스와 일치해야 합니다.</p><ul><li><strong>AddressMatcher:</strong> K8s 서비스에 속하지 않는 IP/Port/Protocol 튜플(예: AWS 메타데이터 <code>169.254.169.254:8080</code>)을 로컬 백엔드 파드로 리다이렉션</li><li><strong>ServiceMatcher:</strong> 기존 ClusterIP 서비스의 eBPF 항목을 LocalRedirect로 대체해 동일 노드의 백엔드로만 트래픽 전달</li></ul><div class="code-box"><div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div><pre><code># AddressMatcher 예시 (169.254.169.254:8080 -&gt; app=proxy 파드 80포트)
+apiVersion: &quot;cilium.io/v2&quot;
+kind: CiliumLocalRedirectPolicy
+metadata:
+  name: &quot;lrp-addr&quot;
+spec:
+  redirectFrontend:
+    addressMatcher:
+      ip: &quot;169.254.169.254&quot;
+      toPorts:
+        - port: &quot;8080&quot;
+          protocol: TCP
+  redirectBackend:
+    localEndpointSelector:
+      matchLabels:
+        app: proxy
+    toPorts:
+      - port: &quot;80&quot;
+        protocol: TCP
+---
+# ServiceMatcher 예시
+apiVersion: &quot;cilium.io/v2&quot;
+kind: CiliumLocalRedirectPolicy
+metadata:
+  name: &quot;lrp-svc&quot;
+spec:
+  redirectFrontend:
+    serviceMatcher:
+      serviceName: my-service
+      namespace: default
+  redirectBackend:
+    localEndpointSelector:
+      matchLabels:
+        app: proxy
+    toPorts:
+      - port: &quot;80&quot;
+        protocol: TCP</code></pre></div></section><section class="article-section"><h2>제약사항 및 유즈케이스 (Node Local DNS Cache, EKS kiam)</h2><ul><li>정책 생성 이전의 기존 활성 연결은 리다이렉션되지 않으므로 필요 시 클라이언트 파드를 재시작해야 합니다.</li><li>현재 LRP 정책은 인플레이스 업데이트가 지원되지 않아 변경 시 삭제 후 재생성해야 합니다.</li><li><strong>EKS kiam 리다이렉션:</strong> 파드가 <code>169.254.169.254:80</code>으로 보내는 AWS 메타데이터 요청을 로컬 노드의 <code>kiam-agent</code>(8181 포트)로 가로채 자격 증명을 안전하게 전달할 때 활용합니다.</li></ul></section>
+        <div style="margin-top:20px; font-size:13.5px; color:var(--text-muted);">
+          <strong>원본 참고:</strong> <a href="https://hyeonjae1122.github.io/posts/Cilium-3week-3/" target="_blank" rel="noopener noreferrer">https://hyeonjae1122.github.io/posts/Cilium-3week-3/ ↗</a>
+        </div>
+        <div class="tag-row"><span class="tag">#LocalRedirectPolicy</span><span class="tag">#AddressMatcher</span><span class="tag">#ServiceMatcher</span><span class="tag">#kiam</span><span class="tag">#NodeLocalDNS</span></div>
+      </article>
+      <nav id="articleNav" class="article-nav"></nav>
+    </main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="../assets/data.js"></script>
+  <script src="../assets/app.js"></script>
+</body>
+</html>

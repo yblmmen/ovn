@@ -3,19 +3,19 @@ window.BLOG_DOMAINS = [
     id: "setup-ebpf",
     badge: "01",
     title: "환경 구성 & eBPF 기초",
-    desc: "Vagrant + VirtualBox 기반 K8s 1.33 3노드 실습 환경 구축과 iptables 한계, eBPF 커널 Hook 및 Native Routing 트래픽 검증을 다룹니다."
+    desc: "Vagrant + VirtualBox 기반 K8s 1.33 실습 환경 구축, Cilium 아키텍처(Sidecarless), Calico→Cilium 무중단 마이그레이션 및 eBPF 커널 Hook을 다룹니다."
   },
   {
     id: "observability",
     badge: "02",
     title: "트래픽 가시성 (Observability)",
-    desc: "Hubble UI/CLI, Prometheus + Grafana 메트릭 수집, Loki + Promtail을 활용한 Flow Log 시각화 구성을 정리합니다."
+    desc: "Hubble UI/CLI, Hubble API mTLS 구성 및 디버깅, Prometheus + Grafana 메트릭 수집, Loki + Promtail Flow Log 시각화를 정리합니다."
   },
   {
     id: "pod-networking",
     badge: "03",
     title: "Node & Pod 네트워크 통신",
-    desc: "IPAM, Routing & DNS, Native vs VXLAN Overlay 비교, LoadBalancer IPAM과 L2 Announcement 동작을 살펴봅니다."
+    desc: "IPAM, Routing & DNS, Local Redirect Policy(LRP), Native vs VXLAN/GENEVE 비교, MTU 1450과 오버헤드 계산, LB-IPAM & L2 Announcement를 살펴봅니다."
   },
   {
     id: "bgp-clustermesh",
@@ -47,12 +47,36 @@ window.BLOG_POSTS = [
     keywords: "Vagrant VirtualBox kubeadm init join iptables eBPF tcx XDP Helm cilium_lxc lxc"
   },
   {
+    id: "cilium-overview-architecture",
+    domainId: "setup-ebpf",
+    file: "pages/cilium-overview-architecture.html",
+    title: "Cilium 개요 & 아키텍처 (Sidecarless)",
+    sourceUrl: "https://hyeonjae1122.github.io/posts/Cillium-1week-2/",
+    keywords: "Sidecar Sidecarless Agent Operator CNI Plugin Hubble Relay eBPF CRD etcd"
+  },
+  {
+    id: "cilium-migration",
+    domainId: "setup-ebpf",
+    file: "pages/cilium-migration.html",
+    title: "Calico에서 Cilium으로 무중단 마이그레이션",
+    sourceUrl: "https://hyeonjae1122.github.io/posts/Cillium-1week-1/",
+    keywords: "Migration Dual Overlay Calico CiliumNodeConfig tunnelPort 8473 customConf"
+  },
+  {
     id: "hubble-observability",
     domainId: "observability",
     file: "pages/hubble-observability.html",
     title: "Hubble을 통한 Cilium Traffic 가시성 확보",
     sourceUrl: "https://dobby-isfree.tistory.com/253",
     keywords: "Hubble Relay UI CLI port-forward observe verdict DROPPED L7 envoy flowlog export dynamic"
+  },
+  {
+    id: "hubble-tls-mtls",
+    domainId: "observability",
+    file: "pages/hubble-tls-mtls.html",
+    title: "Hubble API TLS(mTLS) 구성 및 커넥션 디버깅",
+    sourceUrl: "https://hyeonjae1122.github.io/posts/Cilium-2week-2/",
+    keywords: "Hubble TLS mTLS hubble-cli openssl s_client watch peers hubble.metrics.tls"
   },
   {
     id: "prometheus-grafana",
@@ -87,12 +111,28 @@ window.BLOG_POSTS = [
     keywords: "Routing DNS CoreDNS kube-dns"
   },
   {
+    id: "local-redirect-policy",
+    domainId: "pod-networking",
+    file: "pages/local-redirect-policy.html",
+    title: "Local Redirect Policy (LRP) 공식문서 정리",
+    sourceUrl: "https://hyeonjae1122.github.io/posts/Cilium-3week-3/",
+    keywords: "Local Redirect Policy CiliumLocalRedirectPolicy AddressMatcher ServiceMatcher kiam NodeLocalDNS"
+  },
+  {
     id: "native-vs-vxlan",
     domainId: "pod-networking",
     file: "pages/native-vs-vxlan.html",
-    title: "Node & Pod 네트워크 통신: Native vs VXLAN",
+    title: "Node & Pod 네트워크 통신: Native vs VXLAN & GENEVE",
     sourceUrl: "https://dobby-isfree.tistory.com/258",
-    keywords: "Native Routing Static Route VXLAN Overlay Tunnel UDP 8472 cilium_vxlan MTU"
+    keywords: "Native Routing Static Route VXLAN GENEVE Overlay Tunnel UDP 8472 6081 cilium_vxlan cilium_geneve"
+  },
+  {
+    id: "mtu-1450-overhead",
+    domainId: "pod-networking",
+    file: "pages/mtu-1450-overhead.html",
+    title: "MTU 1450의 의미와 캡슐화 오버헤드",
+    sourceUrl: "https://hyeonjae1122.github.io/posts/Cilium-4week-2/",
+    keywords: "MTU 1450 MSS VXLAN 50bytes PMTUD Black Hole MSS Clamping WireGuard 60bytes"
   },
   {
     id: "service-external-ip",

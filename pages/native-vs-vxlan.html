@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Node &amp; Pod 네트워크 통신: Native vs VXLAN · Cilium Network Study Blog</title>
+  <title>Node &amp; Pod 네트워크 통신: Native vs VXLAN &amp; GENEVE · Cilium Network Study Blog</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -28,7 +28,7 @@
             </div>
             <button id="completeBtn" class="complete-btn" type="button">○ 학습 완료 표시</button>
           </div>
-          <h1 class="article-title">Node &amp; Pod 네트워크 통신: Native vs VXLAN</h1>
+          <h1 class="article-title">Node &amp; Pod 네트워크 통신: Native vs VXLAN &amp; GENEVE</h1>
           <p class="article-lead">서로 다른 네트워크 대역에 노드가 위치할 때 autoDirectNodeRoutes의 한계와 Static Routing, 그리고 이를 해결하는 VXLAN Overlay 모드의 동작 원리를 비교합니다.</p>
         </header>
         <section class="article-section"><h2>Native Routing Mode와 타 대역 노드(k8s-w0) 통신 불가 원인</h2><p><code>k8s-ctr</code>과 <code>k8s-w1</code>은 같은 <code>/24</code> 대역에 있고, <code>k8s-w0</code>는 다른 네트워크 대역에 배치된 환경입니다. <code>autoDirectNodeRoutes=true</code>는 <strong>같은 L2에 있는 노드들을 대상으로만</strong> PodCIDR 라우팅을 추가하므로, <code>k8s-w1</code> 경로는 추가되지만 <code>k8s-w0</code> 경로는 추가되지 않습니다.</p><ul><li><strong>Native 모드 장점:</strong> 추가 Overlay가 없어 MTU 손실이 없고 캡슐화/디캡슐화 과정이 없어 네트워크 지연과 서버 부하가 적습니다.</li><li><strong>Native 모드 단점:</strong> 다른 네트워크 대역에 대해서는 BGP 에이전트나 네트워크팀의 라우팅 설정이 필요합니다.</li></ul><div class="code-box"><div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div><pre><code># Static Routing 수동 추가 시 통신은 가능하나, 노드/서비스 추가마다 수정이 필요해 비현실적
@@ -62,11 +62,27 @@ ip -c addr show dev cilium_vxlan</code></pre></div><p>VXLAN 적용 후 <code>ip 
     <text x="540" y="45" text-anchor="middle" fill="currentColor" font-size="14" font-weight="700">Tunnel (VXLAN) Mode</text>
     <text x="540" y="72" text-anchor="middle" fill="#64748b" font-size="12">UDP 8472 캡슐화 (cilium_vxlan)</text>
     <text x="540" y="96" text-anchor="middle" fill="#64748b" font-size="12">L3 경계 무관 · 외부 라우터 설정 불필요</text>
-  </svg><figcaption class="figure-caption">Native Routing vs VXLAN Tunnel 모드 동작 특성 비교</figcaption></figure><div class="blockquote">실무 회고: 핀테크 환경처럼 지연 민감도가 높은 서비스에서는 Native 모드가 이상적이지만 커널 업그레이드와 네트워크팀 협업이 필요합니다. 현재 VXLAN 모드로 운영 중이나 최적화 튜닝을 통해 인프라 레벨의 지연을 줄여나가는 것이 목표입니다.</div></section>
+  </svg><figcaption class="figure-caption">Native Routing vs VXLAN Tunnel 모드 동작 특성 비교</figcaption></figure><div class="blockquote">실무 회고: 핀테크 환경처럼 지연 민감도가 높은 서비스에서는 Native 모드가 이상적이지만 커널 업그레이드와 네트워크팀 협업이 필요합니다. 현재 VXLAN 모드로 운영 중이나 최적화 튜닝을 통해 인프라 레벨의 지연을 줄여나가는 것이 목표입니다.</div></section><section class="article-section"><h2>GENEVE Tunnel 모드 확인 (hyeonjae1122 추가 실습)</h2><p>VXLAN(UDP 8472) 대신 <strong>GENEVE(UDP 6081)</strong> 프로토콜을 사용할 수도 있습니다. 모든 노드에서 <code>modprobe geneve</code>로 커널 모듈을 로드한 뒤 <code>tunnelProtocol=geneve</code>로 업그레이드하면 <code>cilium_geneve</code>(MTU 1500) 인터페이스가 생성되고, <code>cilium_host</code>를 경유하는 라우팅 테이블에 <code>mtu 1450</code>이 적용됩니다.</p><div class="code-box"><div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div><pre><code># 모든 노드에 geneve 커널 모듈 로드
+modprobe geneve
+
+# GENEVE 터널 모드로 전환
+helm upgrade cilium cilium/cilium --namespace kube-system --version 1.18.0 --reuse-values \
+  --set routingMode=tunnel --set tunnelProtocol=geneve \
+  --set autoDirectNodeRoutes=false --set installNoConntrackIptablesRules=false
+kubectl rollout restart -n kube-system ds/cilium
+
+# 확인
+cilium features status | grep datapath_network
+# mode=overlay-geneve
+ip -c addr show dev cilium_geneve
+
+# 라우터에서 UDP 6081 패킷 캡처 및 termshark 디코딩
+tcpdump -i any udp port 6081 -w /tmp/geneve.pcap
+termshark -r /tmp/geneve.pcap -d udp.port==6081,geneve</code></pre></div></section>
         <div style="margin-top:20px; font-size:13.5px; color:var(--text-muted);">
           <strong>원본 참고:</strong> <a href="https://dobby-isfree.tistory.com/258" target="_blank" rel="noopener noreferrer">https://dobby-isfree.tistory.com/258 ↗</a>
         </div>
-        <div class="tag-row"><span class="tag">#Native-Routing</span><span class="tag">#VXLAN</span><span class="tag">#Overlay</span><span class="tag">#UDP-8472</span><span class="tag">#cilium_vxlan</span></div>
+        <div class="tag-row"><span class="tag">#Native-Routing</span><span class="tag">#VXLAN</span><span class="tag">#Overlay</span><span class="tag">#UDP-8472</span><span class="tag">#cilium_vxlan</span><span class="tag">#GENEVE</span><span class="tag">#UDP-6081</span><span class="tag">#cilium_geneve</span></div>
       </article>
       <nav id="articleNav" class="article-nav"></nav>
     </main>

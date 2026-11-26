@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hubble API TLS(mTLS) 구성 및 커넥션 디버깅 · Cilium Network Study Blog</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body data-base="../" data-post-id="hubble-tls-mtls">
+  <header id="topbar" class="topbar"></header>
+  <div class="shell">
+    <aside id="sidebar" class="sidebar"></aside>
+    <main class="workspace">
+      <div class="breadcrumb">
+        <a href="../index.html">전체 대문</a>
+        <span>/</span>
+        <span>02 · 트래픽 가시성 (Observability)</span>
+      </div>
+      <article class="article-card">
+        <header class="article-header">
+          <div class="article-meta-row">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <span class="pill">02 · 트래픽 가시성 (Observability)</span>
+              <span style="font-size:12.5px; color:var(--text-soft);">Jini-99 · 2025. 7. 24.</span>
+            </div>
+            <button id="completeBtn" class="complete-btn" type="button">○ 학습 완료 표시</button>
+          </div>
+          <h1 class="article-title">Hubble API TLS(mTLS) 구성 및 커넥션 디버깅</h1>
+          <p class="article-lead">Hubble Server와 Hubble Relay 간 mTLS 보안 연결을 Helm으로 구성하고, hubble-cli 파드와 openssl s_client로 TLS 핸드셰이크를 검증·디버깅합니다.</p>
+        </header>
+        <section class="article-section"><h2>Hubble API mTLS 및 Helm 인증서 설정</h2><p>Hubble Server와 Hubble Relay 간 연결은 기본적으로 mTLS로 보호되며, 두 컴포넌트 모두 인증서 Hot Re-loading을 지원해 기존 연결을 끊지 않고 새 인증서를 적용합니다. Helm 방식은 자동 갱신되지 않으므로 만료 전 <code>helm upgrade</code>로 갱신해야 합니다.</p><div class="code-box"><div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div><pre><code>helm upgrade cilium cilium/cilium --namespace kube-system --reuse-values \
+  --set hubble.enabled=true \
+  --set hubble.relay.enabled=true \
+  --set hubble.ui.enabled=true \
+  --set hubble.tls.auto.enabled=true \
+  --set hubble.tls.auto.method=helm \
+  --set hubble.tls.auto.certValidityDuration=1095 \
+  --set hubble.metrics.tls.enabled=true
+
+kubectl get configmap -n kube-system cilium-config -oyaml | grep hubble-disable-tls
+# hubble-disable-tls: &quot;false&quot;면 정상</code></pre></div></section><section class="article-section"><h2>hubble-cli 파드 & openssl s_client mTLS 검증</h2><p>공식 <code>hubble-cli.yaml</code>에서 이미지 버전을 <code>quay.io/cilium/hubble:v1.16.4</code> 등으로 맞춰 배포한 뒤, <code>hubble watch peers</code>로 서버 이름(TLS.ServerName)과 IP를 확인합니다.</p><div class="code-box"><div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div><pre><code>kubectl exec -it -n kube-system deployment/hubble-cli -- \
+  hubble watch peers --server unix:///var/run/cilium/hubble.sock
+
+# 클라이언트 인증서 없이 접속 시: tlsv13 alert certificate required 오류 발생
+# 올바른 클라이언트 인증서/키 지정 시 Verification: OK 및 Post-Handshake New Session Ticket 확인
+kubectl exec -i -n kube-system deployment/hubble-cli -- \
+  openssl s_client -showcerts -servername ${SERVERNAME} -connect ${IP}:4244 \
+  -CAfile /var/lib/hubble-relay/tls/hubble-server-ca.crt \
+  -cert /var/lib/hubble-relay/tls/client.crt \
+  -key /var/lib/hubble-relay/tls/client.key</code></pre></div></section>
+        <div style="margin-top:20px; font-size:13.5px; color:var(--text-muted);">
+          <strong>원본 참고:</strong> <a href="https://hyeonjae1122.github.io/posts/Cilium-2week-2/" target="_blank" rel="noopener noreferrer">https://hyeonjae1122.github.io/posts/Cilium-2week-2/ ↗</a>
+        </div>
+        <div class="tag-row"><span class="tag">#Hubble-TLS</span><span class="tag">#mTLS</span><span class="tag">#openssl</span><span class="tag">#hubble-cli</span><span class="tag">#Hot-Reload</span></div>
+      </article>
+      <nav id="articleNav" class="article-nav"></nav>
+    </main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="../assets/data.js"></script>
+  <script src="../assets/app.js"></script>
+</body>
+</html>
