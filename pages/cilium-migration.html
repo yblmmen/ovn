@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Calico에서 Cilium으로 무중단 마이그레이션 · Cilium Network Study Blog</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body data-base="../" data-post-id="cilium-migration">
+  <header id="topbar" class="topbar"></header>
+  <div class="shell">
+    <aside id="sidebar" class="sidebar"></aside>
+    <main class="workspace">
+      <div class="breadcrumb">
+        <a href="../index.html">전체 대문</a>
+        <span>/</span>
+        <span>01 · 환경 구성 &amp; eBPF 기초</span>
+      </div>
+      <article class="article-card">
+        <header class="article-header">
+          <div class="article-meta-row">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <span class="pill">01 · 환경 구성 &amp; eBPF 기초</span>
+              <span style="font-size:12.5px; color:var(--text-soft);">Jini-99 · 2025. 7. 13.</span>
+            </div>
+            <button id="completeBtn" class="complete-btn" type="button">○ 학습 완료 표시</button>
+          </div>
+          <h1 class="article-title">Calico에서 Cilium으로 무중단 마이그레이션</h1>
+          <p class="article-lead">기존 Calico CNI(192.168.0.0/16, VXLAN 8472) 클러스터에 Dual-Overlay 방식으로 Cilium(10.244.0.0/16, 8473)을 배포하고 CiliumNodeConfig로 노드별 순차 전환을 수행합니다.</p>
+        </header>
+        <section class="article-section"><h2>Dual Overlay 마이그레이션 원리 및 제약사항</h2><p>단순히 <code>/etc/cni/net.d</code> 설정만 덮어쓰면 기존 파드는 구 CNI에 남아 통신이 단절됩니다. Cilium은 <strong>Dual-Overlay(하이브리드)</strong> 모드를 지원해 마이그레이션 중에도 기존 CNI 파드와 Cilium 파드 간 통신을 유지합니다.</p><ul><li><strong>필수 요건:</strong> 겹치지 않는 새로운 Pod CIDR(예: Calico <code>192.168.0.0/16</code> vs Cilium <code>10.244.0.0/16</code>), <code>cluster-pool</code> IPAM, 충돌하지 않는 오버레이 포트(<code>tunnelPort: 8473</code>).</li><li><strong>제약사항:</strong> 마이그레이션 중 기존 NetworkPolicy 유지는 미지원이므로 <code>policyEnforcementMode: "never"</code>로 두고 완료 후 복원합니다.</li></ul></section><section class="article-section"><h2>단계별 마이그레이션 절차</h2><div class="code-box"><div class="code-head"><span>yaml</span><button class="copy-btn" type="button">복사</button></div><pre><code># 1. values-migration.yaml (Secondary Mode로 Cilium 먼저 설치)
+operator:
+  unmanagedPodWatcher:
+    restart: false
+tunnelPort: 8473
+cni:
+  customConf: true
+  uninstall: false
+ipam:
+  mode: &quot;cluster-pool&quot;
+  operator:
+    clusterPoolIPv4PodCIDRList: [&quot;10.244.0.0/16&quot;]
+policyEnforcementMode: &quot;never&quot;
+bpf:
+  hostLegacyRouting: true</code></pre></div><div class="code-box"><div class="code-head"><span>bash</span><button class="copy-btn" type="button">복사</button></div><pre><code># 2. 노드별 순차 전환 루프 (cordon -&gt; drain -&gt; label -&gt; cilium pod 재시작 -&gt; uncordon)
+kubectl cordon $NODE
+kubectl drain $NODE --ignore-daemonsets
+kubectl label node $NODE --overwrite &quot;io.cilium.migration/cilium-default=true&quot;
+kubectl -n kube-system delete pod --field-selector spec.nodeName=$NODE -l k8s-app=cilium
+kubectl -n kube-system rollout status ds/cilium -w
+kubectl uncordon $NODE
+
+# 3. 모든 노드 전환 완료 후 최종 Helm 값 적용 및 CiliumNodeConfig 정리
+cilium install --helm-values values-initial.yaml \
+  --helm-set operator.unmanagedPodWatcher.restart=true \
+  --helm-set cni.customConf=false \
+  --helm-set policyEnforcementMode=default \
+  --dry-run-helm-values &gt; values-final.yaml
+helm upgrade --install --namespace kube-system cilium cilium/cilium --values values-final.yaml
+kubectl -n kube-system rollout restart daemonset cilium &amp;&amp; cilium status --wait
+kubectl delete -n kube-system ciliumnodeconfig cilium-default</code></pre></div></section>
+        <div style="margin-top:20px; font-size:13.5px; color:var(--text-muted);">
+          <strong>원본 참고:</strong> <a href="https://hyeonjae1122.github.io/posts/Cillium-1week-1/" target="_blank" rel="noopener noreferrer">https://hyeonjae1122.github.io/posts/Cillium-1week-1/ ↗</a>
+        </div>
+        <div class="tag-row"><span class="tag">#Migration</span><span class="tag">#Dual-Overlay</span><span class="tag">#Calico</span><span class="tag">#CiliumNodeConfig</span><span class="tag">#tunnelPort</span></div>
+      </article>
+      <nav id="articleNav" class="article-nav"></nav>
+    </main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="../assets/data.js"></script>
+  <script src="../assets/app.js"></script>
+</body>
+</html>
